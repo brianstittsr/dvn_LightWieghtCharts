@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { isAdmin } from "@/lib/admin-auth";
+import { adminAuth, adminConfigured } from "@/lib/firebase-admin";
 import { readJson, writeJson } from "@/lib/server-store";
 import { toPublic, type TradingAccount } from "@/lib/settings";
 
@@ -9,6 +10,7 @@ const FILE = "users.json";
 
 const createSchema = z.object({
   name: z.string().trim().min(1).max(60),
+  ownerEmail: z.string().trim().email().max(200).optional(),
   platform: z.enum(["alpaca", "topstep", "apex", "schwab", "ninjatrader"]),
   apiKey: z.string().trim().max(200).optional(),
   apiSecret: z.string().trim().max(200).optional(),
@@ -34,13 +36,36 @@ export async function POST(req: NextRequest) {
       { status: 400 },
     );
   }
+  const { ownerEmail, ...rest } = parsed.data;
+
+  // Resolve the owner's email to a Firebase uid when provided.
+  let ownerUid: string | undefined;
+  if (ownerEmail) {
+    if (!adminConfigured()) {
+      return NextResponse.json(
+        { error: "Firebase Admin not configured — set FIREBASE_* env vars" },
+        { status: 501 },
+      );
+    }
+    try {
+      ownerUid = (await adminAuth().getUserByEmail(ownerEmail)).uid;
+    } catch {
+      return NextResponse.json(
+        { error: `No Firebase user found for ${ownerEmail}` },
+        { status: 404 },
+      );
+    }
+  }
+
   const users = await load();
   if (users.length >= 50) {
     return NextResponse.json({ error: "Account limit reached" }, { status: 400 });
   }
   const acct: TradingAccount = {
     id: randomUUID(),
-    ...parsed.data,
+    ...rest,
+    ownerUid,
+    ownerEmail: ownerEmail ?? undefined,
     createdAt: new Date().toISOString(),
   };
   users.push(acct);

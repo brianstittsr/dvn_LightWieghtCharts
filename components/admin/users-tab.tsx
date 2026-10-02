@@ -5,10 +5,26 @@ import type { PublicAccount } from "@/lib/settings";
 
 const PLATFORMS = ["alpaca", "topstep", "apex", "schwab", "ninjatrader"] as const;
 
-const EMPTY_FORM = { name: "", platform: "alpaca", apiKey: "", apiSecret: "", notes: "" };
+const EMPTY_FORM = {
+  name: "",
+  ownerEmail: "",
+  platform: "alpaca",
+  apiKey: "",
+  apiSecret: "",
+  notes: "",
+};
+
+interface AuthUser {
+  uid: string;
+  email: string | null;
+  displayName: string | null;
+  createdAt?: string;
+  lastSignIn?: string;
+}
 
 export default function UsersTab() {
   const [users, setUsers] = useState<PublicAccount[]>([]);
+  const [authUsers, setAuthUsers] = useState<AuthUser[]>([]);
   const [form, setForm] = useState(EMPTY_FORM);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -20,6 +36,10 @@ export default function UsersTab() {
       .then((d) => setUsers(d.data?.users ?? []))
       .catch(() => setErr("Failed to load accounts"))
       .finally(() => setLoading(false));
+    fetch("/api/admin/auth-users")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d) => setAuthUsers(d?.data?.users ?? []))
+      .catch(() => {});
   }, []);
 
   useEffect(refresh, [refresh]);
@@ -34,6 +54,7 @@ export default function UsersTab() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name: form.name,
+          ownerEmail: form.ownerEmail || undefined,
           platform: form.platform,
           apiKey: form.apiKey || undefined,
           apiSecret: form.apiSecret || undefined,
@@ -74,6 +95,19 @@ export default function UsersTab() {
             className={input}
             required
           />
+          <input
+            aria-label="Owner email (Firebase user)"
+            placeholder="Owner email (Firebase user)"
+            list="auth-user-emails"
+            value={form.ownerEmail}
+            onChange={(e) => setForm({ ...form, ownerEmail: e.target.value })}
+            className={input}
+          />
+          <datalist id="auth-user-emails">
+            {authUsers.map((u) =>
+              u.email ? <option key={u.uid} value={u.email} /> : null,
+            )}
+          </datalist>
           <select
             aria-label="Platform"
             value={form.platform}
@@ -134,6 +168,7 @@ export default function UsersTab() {
             <thead>
               <tr className="border-b border-[#2a2e39] text-left text-xs text-gray-500">
                 <th className="px-4 py-2 font-medium">Name</th>
+                <th className="px-4 py-2 font-medium">Owner</th>
                 <th className="px-4 py-2 font-medium">Platform</th>
                 <th className="px-4 py-2 font-medium">Key</th>
                 <th className="px-4 py-2 font-medium">Notes</th>
@@ -144,6 +179,9 @@ export default function UsersTab() {
               {users.map((u) => (
                 <tr key={u.id} className="border-b border-[#1e222d] last:border-0">
                   <td className="px-4 py-2.5 text-white">{u.name}</td>
+                  <td className="px-4 py-2.5 text-xs text-gray-400">
+                    {u.ownerEmail ?? "—"}
+                  </td>
                   <td className="px-4 py-2.5 capitalize text-gray-400">{u.platform}</td>
                   <td className="px-4 py-2.5 font-mono text-xs text-gray-500">
                     {u.apiKeyMasked ?? "—"}
@@ -166,9 +204,48 @@ export default function UsersTab() {
           </table>
         )}
       </div>
+      <div className="rounded-lg border border-[#2a2e39] bg-[#131722]">
+        <h2 className="border-b border-[#2a2e39] px-4 py-3 text-sm font-semibold text-white">
+          Firebase users ({authUsers.length})
+        </h2>
+        {authUsers.length === 0 ? (
+          <p className="px-4 py-6 text-center text-sm text-gray-500">
+            No Firebase users — accounts are created from the login screen&apos;s
+            sign-up option.
+          </p>
+        ) : (
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-[#2a2e39] text-left text-xs text-gray-500">
+                <th className="px-4 py-2 font-medium">Email</th>
+                <th className="px-4 py-2 font-medium">UID</th>
+                <th className="px-4 py-2 font-medium">Created</th>
+                <th className="px-4 py-2 font-medium">Last sign-in</th>
+              </tr>
+            </thead>
+            <tbody>
+              {authUsers.map((u) => (
+                <tr key={u.uid} className="border-b border-[#1e222d] last:border-0">
+                  <td className="px-4 py-2.5 text-white">{u.email ?? "—"}</td>
+                  <td className="max-w-[140px] truncate px-4 py-2.5 font-mono text-xs text-gray-500">
+                    {u.uid}
+                  </td>
+                  <td className="px-4 py-2.5 text-xs text-gray-500">
+                    {u.createdAt ? new Date(u.createdAt).toLocaleDateString() : "—"}
+                  </td>
+                  <td className="px-4 py-2.5 text-xs text-gray-500">
+                    {u.lastSignIn ? new Date(u.lastSignIn).toLocaleString() : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
       <p className="text-xs text-gray-600">
-        Stored in <code>data/users.json</code> (gitignored). Secrets are write-only
-        here — they&apos;re masked in this list and never sent back to the browser.
+        Account credentials stored in <code>data/users.json</code> (gitignored) —
+        secrets are masked in this list and never sent back to the browser.
+        Owners are resolved from Firebase Auth users by email.
       </p>
     </div>
   );

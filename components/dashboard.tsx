@@ -1,13 +1,17 @@
 "use client";
 
-import { useState } from "react";
+import { signOut } from "firebase/auth";
+import Link from "next/link";
+import { useEffect, useState } from "react";
 import { ChartPane } from "@/components/chart-pane";
 import { PositionsBar } from "@/components/positions-bar";
 import { MarketStatus } from "@/components/market-status";
 import { PnlCalendar } from "@/components/pnl-calendar";
 import { EconomicCalendar } from "@/components/economic-calendar";
+import { FuturesTicket } from "@/components/futures-ticket";
 import { PlatformsDialog } from "@/components/platforms-dialog";
 import { CHART_COUNTS, useChartCount } from "@/hooks/use-chart-count";
+import { firebaseConfigured, getClientAuth } from "@/lib/firebase";
 import { DEFAULT_PANE_SYMBOLS } from "@/lib/symbols";
 import { cn } from "@/lib/utils";
 
@@ -25,6 +29,14 @@ export function Dashboard() {
   const [calOpen, setCalOpen] = useState(false);
   const [econOpen, setEconOpen] = useState(false);
   const [platOpen, setPlatOpen] = useState(false);
+  const [futOpen, setFutOpen] = useState(false);
+  const [userEmail, setUserEmail] = useState<string | null>(null);
+
+  useEffect(() => {
+    const auth = getClientAuth();
+    if (!auth) return;
+    return auth.onAuthStateChanged((u) => setUserEmail(u?.email ?? null));
+  }, []);
 
   return (
     <div className="flex h-screen flex-col gap-2 bg-neutral-950 p-2">
@@ -68,13 +80,34 @@ export function Dashboard() {
         >
           🔌 Platforms
         </button>
-        <a
+        <button
+          onClick={() => setFutOpen(true)}
+          title="Futures order ticket (TopStep / Apex)"
+          className="rounded bg-neutral-800 px-2.5 py-1 text-xs font-medium text-neutral-300 hover:bg-neutral-700"
+        >
+          ⚡ Futures
+        </button>
+        <Link
           href="/admin"
           title="Admin — accounts & settings"
           className="rounded bg-neutral-800 px-2.5 py-1 text-xs font-medium text-neutral-300 hover:bg-neutral-700"
         >
           ⚙ Admin
-        </a>
+        </Link>
+        {firebaseConfigured && userEmail && (
+          <>
+            <span className="text-xs text-neutral-500" title="Signed in as">
+              {userEmail}
+            </span>
+            <button
+              onClick={() => void signOut(getClientAuth()!)}
+              title="Sign out"
+              className="rounded bg-red-900/60 px-2.5 py-1 text-xs font-medium text-red-200 hover:bg-red-800/70"
+            >
+              Sign out
+            </button>
+          </>
+        )}
         <MarketStatus />
       </header>
       <main className={cn("grid min-h-0 flex-1 gap-2", GRID[count])}>
@@ -90,6 +123,7 @@ export function Dashboard() {
       <PnlCalendar open={calOpen} onClose={() => setCalOpen(false)} />
       <EconomicCalendar open={econOpen} onClose={() => setEconOpen(false)} />
       <PlatformsDialog open={platOpen} onClose={() => setPlatOpen(false)} />
+      <FuturesTicket open={futOpen} onClose={() => setFutOpen(false)} />
     </div>
   );
 }

@@ -36,6 +36,9 @@ export const DEFAULT_SETTINGS: AppSettings = appSettingsSchema.parse({});
 /** Trading account managed from the admin page (one per platform credential set). */
 export interface TradingAccount {
   id: string;
+  /** Firebase Auth uid this account belongs to (resolved from ownerEmail). */
+  ownerUid?: string;
+  ownerEmail?: string;
   name: string;
   platform: "alpaca" | "topstep" | "apex" | "schwab" | "ninjatrader";
   apiKey?: string;
@@ -56,6 +59,8 @@ const mask = (v?: string): string | undefined =>
 export function toPublic(a: TradingAccount): PublicAccount {
   return {
     id: a.id,
+    ownerUid: a.ownerUid,
+    ownerEmail: a.ownerEmail,
     name: a.name,
     platform: a.platform,
     notes: a.notes,
