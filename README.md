@@ -1,36 +1,53 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Live Charts Dashboard
 
-## Getting Started
+Multi-pane live trading dashboard built with Next.js, Tailwind CSS and
+[Lightweight Charts](https://github.com/tradingview/lightweight-charts).
 
-First, run the development server:
+## Features
+
+- **Number of charts selector** (1, 2, 4, 6, 8 — max 8) that reshuffles the grid
+  into the cleanest layout (1=1×1, 2=2×1, 4=2×2, 6=3×2, 8=4×2) and persists
+  your choice in `localStorage`.
+- **Live crypto** streamed over websocket from Hyperliquid.
+- Each pane has **independent symbol and timeframe dropdowns** plus a
+  colour-coded ticker bar that flashes green/red on every price change.
+- **Indicators** (ƒx button per pane): SMA, EMA, WMA, Bollinger Bands, Keltner
+  and Donchian channels — all with TradingView-style editable params
+  (length, source, multiplier, colour). Indicator setups persist per pane.
+- **AI custom indicators**: describe an indicator in plain English and the
+  app generates + adds it (requires `OPENAI_API_KEY`).
+- **Alpaca paper trading**: Buy/Sell order ticket on every pane plus a
+  positions/P&L bar at the bottom (requires Alpaca paper API keys).
+- **Pluggable data sources**: implement the `DataSource` interface in
+  `lib/data-sources.ts` (one file per broker under `lib/sources/`) to swap in
+  Alpaca, Binance, Zerodha, Polygon, etc.
+
+## Run
 
 ```bash
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open http://localhost:3000. Everything runs locally — no deployment needed.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Optional API keys (.env.local)
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```bash
+# Alpaca paper trading (app.alpaca.markets → Paper Trading → API keys)
+APCA_API_KEY_ID=...
+APCA_API_SECRET_KEY=...
 
-## Learn More
+# OpenAI — powers "Generate with AI" custom indicators
+OPENAI_API_KEY=...
+```
 
-To learn more about Next.js, take a look at the following resources:
+Restart `npm run dev` after adding keys. Without them the dashboard works
+fully except order submission and AI indicator generation.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Adding a data source
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+1. Create `lib/sources/mybroker.ts` implementing `DataSource`
+   (`fetchHistory` + `subscribe`).
+2. Register it in `DATA_SOURCES` in `lib/data-sources.ts`.
+3. Add its symbols to `lib/symbols.ts`.

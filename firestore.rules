@@ -1,0 +1,86 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+    function isOwner(uid) {
+      return signedIn() && request.auth.uid == uid;
+    }
+    function isAdmin() {
+      return signedIn()
+        && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    // User profiles: self read/write; admins manage roles.
+    match /users/{uid} {
+      allow read: if isOwner(uid) || isAdmin();
+      allow create: if isOwner(uid);
+      allow update: if isOwner(uid) && !request.resource.data.diff(resource.data).affectedKeys().hasAny(['role'])
+                    || isAdmin();
+      allow delete: if isAdmin();
+    }
+
+    // Trading accounts: owner only. Credentials never live in this doc.
+    match /tradingAccounts/{id} {
+      allow read, write: if signedIn() && resource.data.ownerUid == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid;
+    }
+
+    // Global settings: everyone reads, only admins write.
+    match /appSettings/{doc} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Per-user docs keyed by uid field.
+    match /journals/{id} {
+      allow read, write: if signedIn() && resource.data.uid == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+    }
+    match /customIndicators/{id} {
+      allow read, write: if signedIn() && resource.data.uid == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+    }
+    match /customStrategies/{id} {
+      allow read, write: if signedIn() && resource.data.uid == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+    }
+    match /backtestResults/{id} {
+      allow read, write: if signedIn() && resource.data.uid == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+      match /trades/{tradeId} {
+        allow read, write: if signedIn()
+          && get(/databases/$(database)/documents/backtestResults/$(id)).data.uid == request.auth.uid;
+      }
+    }
+    match /tradeOrders/{id} {
+      allow read, write: if signedIn() && resource.data.uid == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+    }
+    match /alerts/{id} {
+      allow read, write: if signedIn() && resource.data.uid == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+    }
+    match /drawings/{id} {
+      allow read, write: if signedIn() && resource.data.uid == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+    }
+    match /pnlDays/{id} {
+      allow read, write: if signedIn() && resource.data.uid == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+    }
+
+    // Shared calendars: anyone with the link reads non-revoked docs; owner manages.
+    match /sharedCalendars/{id} {
+      allow read: if resource.data.revoked == false;
+      allow create, update, delete: if isAdmin()
+        || (signedIn() && request.resource.data.ownerUid == request.auth.uid);
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

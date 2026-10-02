@@ -1,0 +1,621 @@
+"use client";
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  createChart,
+  createSeriesMarkers,
+  CandlestickSeries,
+  LineSeries,
+  ColorType,
+  type IChartApi,
+  type ISeriesApi,
+  type UTCTimestamp,
+  type LineData,
+  type SeriesMarker,
+  type WhitespaceData,
+} from "lightweight-charts";
+import { getDataSource } from "@/lib/data-sources";
+import { CRYPTO_SYMBOLS, STOCK_SYMBOLS, symbolInfo } from "@/lib/symbols";
+import { TIMEFRAMES, type Timeframe } from "@/lib/timeframe";
+import type { Candle } from "@/lib/types";
+import { getIndicatorDef, loadCustomIndicators, saveCustomIndicator } from "@/lib/indicators/custom";
+import { BUILTIN_INDICATORS } from "@/lib/indicators/builtin";
+import type { IndicatorBox, IndicatorDef, IndicatorInstance, ParamDef } from "@/lib/indicators/types";
+import { TickerBar } from "@/components/ticker-bar";
+import { IndicatorMenu } from "@/components/indicator-menu";
+import { OrderTicket } from "@/components/order-ticket";
+import { DrawingLayer, type TpSlLevel } from "@/components/drawing-layer";
+import { TradeAlertDialog, type TradeAlert } from "@/components/trade-alert-dialog";
+import { BacktestDialog } from "@/components/backtest-dialog";
+import { BacktestResultPopup } from "@/components/backtest-result-popup";
+import type { BacktestResult } from "@/lib/backtest";
+import { useAlpacaPositions } from "@/lib/positions-store";
+import { toAlpacaSymbol } from "@/lib/alpaca-symbol";
+
+interface ChartPaneProps {
+  paneId: string;
+  defaultSymbol: string;
+}
+
+interface AppliedIndicator {
+  defId: string;
+  series: ISeriesApi<"Line">[];
+}
+
+const IND_STORAGE = (paneId: string) => `lwc-ind-${paneId}`;
+
+/** Axis labels + crosshair in New York time so they match the session windows. */
+const nyTime = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  hour12: false,
+  hour: "2-digit",
+  minute: "2-digit",
+});
+const nyDateTime = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  month: "short",
+  day: "numeric",
+  hour12: false,
+  hour: "2-digit",
+  minute: "2-digit",
+});
+const fmtNy = (time: number | UTCTimestamp) =>
+  nyTime.format(new Date(Number(time) * 1000));
+const fmtNyDay = (time: number | UTCTimestamp) =>
+  nyDateTime.format(new Date(Number(time) * 1000));
+
+function toLinePoint(p: { time: number; value: number | null }): LineData | WhitespaceData {
+  return p.value == null
+    ? ({ time: p.time as UTCTimestamp } as WhitespaceData)
+    : ({ time: p.time as UTCTimestamp, value: p.value } as LineData);
+}
+
+/** One self-contained chart pane: symbol/timeframe pickers, indicators, order ticket. */
+export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  const chartRef = useRef<IChartApi | null>(null);
+  const seriesRef = useRef<ISeriesApi<"Candlestick"> | null>(null);
+  const candlesRef = useRef<Candle[]>([]);
+  const indSeriesRef = useRef<Map<number, AppliedIndicator>>(new Map());
+  const instancesRef = useRef<IndicatorInstance[]>([]);
+
+  const [symbol, setSymbol] = useState(defaultSymbol);
+  const [timeframe, setTimeframe] = useState<Timeframe>("15m");
+  const [price, setPrice] = useState<number | null>(null);
+  const [dayOpen, setDayOpen] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [instances, setInstances] = useState<IndicatorInstance[]>([]);
+  const [customDefs, setCustomDefs] = useState<IndicatorDef[]>([]);
+  const positions = useAlpacaPositions();
+
+  // Live P&L for the pane's open position, marked on every tick.
+  const pos = positions.find(
+    (p) => p.symbol.replace("/", "").toUpperCase() === toAlpacaSymbol(symbol).replace("/", "").toUpperCase(),
+  );
+  let posBadge: { side: string; qty: number; entry: number; pl: number; plPct: number } | null = null;
+  if (pos) {
+    const qty = Number(pos.qty);
+    const entry = Number(pos.avg_entry_price);
+    const mark = price ?? Number(pos.current_price);
+    const pl = (pos.side === "short" ? entry - mark : mark - entry) * qty;
+    posBadge = { side: pos.side, qty, entry, pl, plPct: entry * qty !== 0 ? (pl / (entry * qty)) * 100 : 0 };
+  }
+  const [alertMsg, setAlertMsg] = useState<string | null>(null);
+  const [pendingTrade, setPendingTrade] = useState<TradeAlert | null>(null);
+  const [btOpen, setBtOpen] = useState(false);
+  const [btResult, setBtResult] = useState<BacktestResult | null>(null);
+  const btMarkersRef = useRef<{
+    api: { setMarkers: (m: SeriesMarker<UTCTimestamp>[]) => void };
+    series: ISeriesApi<"Candlestick">;
+  } | null>(null);
+  const alertStateRef = useRef<Map<string, { armed: boolean; approached: boolean }>>(new Map());
+  const alertTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const boxesRef = useRef<IndicatorBox[]>([]);
+  const tpslRef = useRef<TpSlLevel[]>([]);
+
+  // Load persisted indicator instances + AI indicators after mount.
+  useEffect(() => {
+    const id = setTimeout(() => {
+      setCustomDefs(loadCustomIndicators());
+      try {
+        const raw = window.localStorage.getItem(IND_STORAGE(paneId));
+        if (raw) setInstances(JSON.parse(raw) as IndicatorInstance[]);
+      } catch {
+        /* ignore corrupt storage */
+      }
+    }, 0);
+    return () => clearTimeout(id);
+  }, [paneId]);
+
+  const persist = useCallback(
+    (next: IndicatorInstance[]) => {
+      instancesRef.current = next;
+      setInstances(next);
+      window.localStorage.setItem(IND_STORAGE(paneId), JSON.stringify(next));
+    },
+    [paneId],
+  );
+
+  /** Recompute every applied indicator against the current candle array. */
+  const recomputeIndicators = useCallback(() => {
+    const candles = candlesRef.current;
+    const boxes: IndicatorBox[] = [];
+    for (const [idx, applied] of indSeriesRef.current) {
+      const inst = instancesRef.current[idx];
+      const def = inst && getIndicatorDef(inst.defId);
+      if (!inst || !def) continue;
+      try {
+        const out = def.compute(candles, inst.params);
+        out.series.forEach((s, i) => {
+          applied.series[i]?.setData(s.values.map(toLinePoint));
+        });
+        if (out.boxes) boxes.push(...out.boxes);
+      } catch (err) {
+        console.error(`Indicator ${def.name} failed:`, err);
+      }
+    }
+    boxesRef.current = boxes;
+  }, []);
+
+  const fireAlert = useCallback((text: string) => {
+    console.warn(`[alert] ${text}`);
+    setAlertMsg(text);
+    if (alertTimerRef.current) clearTimeout(alertTimerRef.current);
+    alertTimerRef.current = setTimeout(() => setAlertMsg(null), 8000);
+    if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+      new Notification("Session reversal", { body: text });
+    }
+  }, []);
+
+  /**
+   * Check alertable levels: (a) proximity alert when price approaches a
+   * level, (b) sweep-and-reversal — arm when price pushes beyond the level,
+   * fire when it falls back inside. Reversals open the trade popup.
+   */
+  const checkLevelAlerts = useCallback(
+    (
+      instIdx: number,
+      def: { name: string },
+      levels: { key: string; label: string; price: number; side: "above" | "below" }[],
+      price: number,
+      nearPct: number,
+    ) => {
+      for (const lvl of levels) {
+        const key = `${instIdx}:${def.name}:${lvl.key}`;
+        const state = alertStateRef.current.get(key) ?? { armed: false, approached: false };
+        const dist = Math.abs(price - lvl.price) / lvl.price;
+
+        // Proximity alert: fires once per approach, re-arms after moving away.
+        if (dist <= nearPct && !state.approached) {
+          state.approached = true;
+          fireAlert(`${symbol}: approaching ${lvl.label} ${lvl.price.toFixed(2)} (price ${price.toFixed(2)})`);
+        } else if (dist > nearPct * 2) {
+          state.approached = false;
+        }
+
+        if (lvl.side === "above") {
+          if (price > lvl.price) state.armed = true;
+          else if (state.armed) {
+            state.armed = false;
+            const reason = `${symbol}: ${lvl.label} reversal — swept ${lvl.price.toFixed(2)} then broke back below`;
+            fireAlert(reason);
+            setPendingTrade({ symbol, side: "sell", reason, price });
+          }
+        } else {
+          if (price < lvl.price) state.armed = true;
+          else if (state.armed) {
+            state.armed = false;
+            const reason = `${symbol}: ${lvl.label} reversal — swept ${lvl.price.toFixed(2)} then broke back above`;
+            fireAlert(reason);
+            setPendingTrade({ symbol, side: "buy", reason, price });
+          }
+        }
+        alertStateRef.current.set(key, state);
+      }
+    },
+    [fireAlert, symbol, setPendingTrade],
+  );
+
+  /** Update only the latest point of each indicator (cheap path on live ticks). */
+  const updateIndicatorsTick = useCallback(() => {
+    const candles = candlesRef.current;
+    const lastClose = candles[candles.length - 1]?.close;
+    const boxes: IndicatorBox[] = [];
+    for (const [idx, applied] of indSeriesRef.current) {
+      const inst = instancesRef.current[idx];
+      const def = inst && getIndicatorDef(inst.defId);
+      if (!inst || !def) continue;
+      try {
+        const out = def.compute(candles, inst.params);
+        out.series.forEach((s, i) => {
+          const last = s.values[s.values.length - 1];
+          if (last) applied.series[i]?.update(toLinePoint(last));
+        });
+        if (out.boxes) boxes.push(...out.boxes);
+        if (out.levels && inst.params.alert && lastClose != null) {
+          const nearPct = Number(inst.params.near ?? 0.15) / 100;
+          checkLevelAlerts(idx, def, out.levels, lastClose, nearPct);
+        }
+      } catch (err) {
+        console.error(`Indicator ${def.name} failed:`, err);
+      }
+    }
+    boxesRef.current = boxes;
+  }, [checkLevelAlerts]);
+
+  // Create chart once, resize with the pane.
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+    const chart = createChart(el, {
+      layout: {
+        background: { type: ColorType.Solid, color: "#111318" },
+        textColor: "#9ca3af",
+        fontSize: 11,
+      },
+      grid: {
+        vertLines: { color: "#1f2430" },
+        horzLines: { color: "#1f2430" },
+      },
+      timeScale: {
+        timeVisible: true,
+        secondsVisible: false,
+        borderColor: "#2a3040",
+        // TickMarkType: 0=Year 1=Month 2=DayOfMonth 3=Time — show dates for
+        // day-level marks, HH:mm for intraday.
+        tickMarkFormatter: (time: UTCTimestamp, tickMarkType: number) =>
+          tickMarkType <= 2 ? fmtNyDay(time) : fmtNy(time),
+      },
+      localization: { timeFormatter: fmtNy },
+      rightPriceScale: { borderColor: "#2a3040" },
+      crosshair: { mode: 0 },
+      autoSize: false,
+    });
+    const series = chart.addSeries(CandlestickSeries, {
+      upColor: "#22c55e",
+      downColor: "#ef4444",
+      wickUpColor: "#22c55e",
+      wickDownColor: "#ef4444",
+      borderVisible: false,
+    });
+    chartRef.current = chart;
+    seriesRef.current = series;
+
+    const ro = new ResizeObserver(() => {
+      chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
+    });
+    ro.observe(el);
+    const indMap = indSeriesRef.current;
+    return () => {
+      ro.disconnect();
+      indMap.clear();
+      chart.remove();
+      chartRef.current = null;
+      seriesRef.current = null;
+    };
+  }, []);
+
+  // Load history + subscribe whenever symbol or timeframe changes.
+  useEffect(() => {
+    const series = seriesRef.current;
+    if (!series) return;
+    const source = getDataSource(symbolInfo(symbol).source);
+    let cancelled = false;
+    let unsubscribe: (() => void) | null = null;
+
+    setError(null);
+    setPrice(null);
+    setDayOpen(null);
+    setAlertMsg(null);
+    candlesRef.current = [];
+    alertStateRef.current.clear();
+
+    source
+      .fetchHistory(symbol, timeframe)
+      .then((candles) => {
+        if (cancelled) return;
+        candlesRef.current = candles.slice();
+        series.setData(candles.map((c) => ({ ...c, time: c.time as UTCTimestamp })));
+        chartRef.current?.timeScale().fitContent();
+        const last = candles[candles.length - 1];
+        if (last) {
+          setPrice(last.close);
+          const dayStart = candles.find((c) => c.time >= last.time - (last.time % 86400));
+          setDayOpen(dayStart?.open ?? candles[0]?.open ?? null);
+        }
+        recomputeIndicators();
+        unsubscribe = source.subscribe(symbol, timeframe, (tick) => {
+          const arr = candlesRef.current;
+          const lastCandle = arr[arr.length - 1];
+          // Stale tick (e.g. a delayed quote older than the last bar) — skip
+          // it entirely; the chart can't update out-of-order bars.
+          if (lastCandle && tick.time < lastCandle.time) return;
+          // TP/SL line cross detection (previous close vs new close).
+          const prev = lastCandle?.close;
+          if (prev != null) {
+            for (const lvl of tpslRef.current) {
+              const crossed = (prev - lvl.price) * (tick.close - lvl.price) < 0;
+              if (!crossed) continue;
+              const kind = lvl.kind === "tp" ? "Take profit" : "Stop loss";
+              const reason = `${symbol}: ${kind} hit — price crossed ${lvl.price.toFixed(2)}`;
+              fireAlert(reason);
+              setPendingTrade({ symbol, side: "sell", reason, price: tick.close });
+            }
+          }
+          if (lastCandle && lastCandle.time === tick.time) {
+            arr[arr.length - 1] = tick;
+          } else {
+            arr.push(tick);
+          }
+          series.update({ ...tick, time: tick.time as UTCTimestamp });
+          setPrice(tick.close);
+          updateIndicatorsTick();
+        });
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          console.error(err);
+          setError(err instanceof Error ? err.message : "Failed to load data");
+        }
+      });
+
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [symbol, timeframe, recomputeIndicators, updateIndicatorsTick, fireAlert]);
+
+  // Sync indicator line series with the instance list; recompute on param changes.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const map = indSeriesRef.current;
+
+    // Remove series for deleted or re-typed instances.
+    for (const [idx, applied] of map) {
+      if (!instances[idx] || instances[idx].defId !== applied.defId) {
+        applied.series.forEach((s) => chart.removeSeries(s));
+        map.delete(idx);
+      }
+    }
+    // Create series for new instances.
+    instances.forEach((inst, idx) => {
+      if (map.has(idx)) return;
+      const def = getIndicatorDef(inst.defId);
+      if (!def) return;
+      try {
+        const out = def.compute(candlesRef.current, inst.params);
+        const lineSeries = out.series.map((s) =>
+          chart.addSeries(
+            LineSeries,
+            {
+              color: s.color,
+              lineWidth: 2,
+              priceLineVisible: false,
+              lastValueVisible: false,
+              crosshairMarkerVisible: false,
+            },
+            def.pane ?? 0,
+          ),
+        );
+        map.set(idx, { defId: inst.defId, series: lineSeries });
+      } catch (err) {
+        console.error(`Indicator ${def.name} failed:`, err);
+      }
+    });
+    instancesRef.current = instances;
+    recomputeIndicators();
+  }, [instances, customDefs, recomputeIndicators]);
+
+  const addIndicator = useCallback(
+    (defId: string) => {
+      const def = getIndicatorDef(defId);
+      if (!def) return;
+      const defaults = Object.fromEntries(def.params.map((p) => [p.key, p.default]));
+      persist([...instancesRef.current, { defId, params: defaults }]);
+    },
+    [persist],
+  );
+
+  const removeIndicator = useCallback(
+    (index: number) => {
+      persist(instancesRef.current.filter((_, i) => i !== index));
+    },
+    [persist],
+  );
+
+  const changeParam = useCallback(
+    (index: number, key: string, value: number | string) => {
+      persist(
+        instancesRef.current.map((inst, i) =>
+          i === index ? { ...inst, params: { ...inst.params, [key]: value } } : inst,
+        ),
+      );
+    },
+    [persist],
+  );
+
+  const onLevelsChange = useCallback((levels: TpSlLevel[]) => {
+    tpslRef.current = levels;
+  }, []);
+
+  /** ⚓ tool clicked at time t — anchor every AVWAP instance to that bar. */
+  const onAnchorClick = useCallback(
+    (t: number) => {
+      const next = instancesRef.current.map((inst) =>
+        inst.defId === "avwap" ? { ...inst, params: { ...inst.params, anchor: 6, anchorTime: t } } : inst,
+      );
+      if (next.some((inst, i) => inst !== instancesRef.current[i])) {
+        persist(next);
+        setAlertMsg(`AVWAP anchored to ${new Date(t * 1000).toUTCString()}`);
+        if (alertTimerRef.current) clearTimeout(alertTimerRef.current);
+        alertTimerRef.current = setTimeout(() => setAlertMsg(null), 4000);
+      } else {
+        setAlertMsg("Add the AVWAP indicator first, then click a bar to anchor it");
+        if (alertTimerRef.current) clearTimeout(alertTimerRef.current);
+        alertTimerRef.current = setTimeout(() => setAlertMsg(null), 4000);
+      }
+    },
+    [persist],
+  );
+
+  /** Backtest finished: show the result popup and mark trades on the chart. */
+  const onBacktestResult = (r: BacktestResult): void => {
+    setBtResult(r);
+    const series = seriesRef.current;
+    if (!series) return;
+    if (btMarkersRef.current?.series !== series) {
+      btMarkersRef.current = { api: createSeriesMarkers(series), series };
+    }
+    const markers: SeriesMarker<UTCTimestamp>[] = [];
+    for (const t of r.trades) {
+      markers.push({
+        time: t.entryTime as UTCTimestamp,
+        position: t.side === "long" ? "belowBar" : "aboveBar",
+        shape: t.side === "long" ? "arrowUp" : "arrowDown",
+        color: t.side === "long" ? "#22c55e" : "#ef4444",
+        text: t.side === "long" ? "B" : "S",
+      });
+      markers.push({
+        time: t.exitTime as UTCTimestamp,
+        position: t.side === "long" ? "aboveBar" : "belowBar",
+        shape: "circle",
+        color: t.pnl >= 0 ? "#22c55e" : "#ef4444",
+        text: "",
+      });
+    }
+    markers.sort((a, b) => Number(a.time) - Number(b.time));
+    btMarkersRef.current.api.setMarkers(markers);
+  };
+
+  const onGenerated = useCallback(
+    (spec: { name: string; params: ParamDef[]; code: string }) => {
+      const id = `ai-${Date.now().toString(36)}`;
+      const def = saveCustomIndicator({ id, ...spec });
+      setCustomDefs(loadCustomIndicators());
+      const defaults = Object.fromEntries(def.params.map((p) => [p.key, p.default]));
+      persist([...instancesRef.current, { defId: def.id, params: defaults }]);
+    },
+    [persist],
+  );
+
+  return (
+    <div className="flex min-h-0 min-w-0 flex-col overflow-hidden rounded-lg border border-neutral-800 bg-[#111318]">
+      <div className="flex flex-wrap items-center gap-2 border-b border-neutral-800 px-2 py-1.5">
+        <select
+          value={symbol}
+          onChange={(e) => setSymbol(e.target.value)}
+          className="rounded bg-neutral-800 px-1.5 py-1 text-xs text-neutral-200 outline-none"
+          aria-label="Symbol"
+        >
+          <optgroup label="Crypto — Hyperliquid">
+            {CRYPTO_SYMBOLS.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
+          </optgroup>
+          <optgroup label="US stocks — Alpaca">
+            {STOCK_SYMBOLS.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
+          </optgroup>
+        </select>
+        <select
+          value={timeframe}
+          onChange={(e) => setTimeframe(e.target.value as Timeframe)}
+          className="rounded bg-neutral-800 px-1.5 py-1 text-xs text-neutral-200 outline-none"
+          aria-label="Timeframe"
+        >
+          {TIMEFRAMES.map((tf) => (
+            <option key={tf} value={tf}>
+              {tf}
+            </option>
+          ))}
+        </select>
+        <IndicatorMenu
+          instances={instances}
+          defs={[...BUILTIN_INDICATORS, ...customDefs]}
+          customDefs={customDefs}
+          onAdd={addIndicator}
+          onRemove={removeIndicator}
+          onParamChange={changeParam}
+          onGenerated={onGenerated}
+          onCustomDeleted={() => setCustomDefs(loadCustomIndicators())}
+        />
+        <button
+          onClick={() => setBtOpen(true)}
+          title="Backtest a strategy on the loaded candles"
+          className="rounded bg-neutral-800 px-1.5 py-1 text-[10px] font-medium text-neutral-300 hover:bg-neutral-700 hover:text-neutral-100"
+        >
+          ▶ BT
+        </button>
+        <TickerBar label={symbolInfo(symbol).value} price={price} dayOpen={dayOpen} />
+        {posBadge && (
+          <span
+            className={`rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold ${
+              posBadge.pl >= 0 ? "bg-green-900/40 text-green-300" : "bg-red-900/40 text-red-300"
+            }`}
+            title={`${posBadge.side} ${posBadge.qty} @ ${posBadge.entry.toFixed(2)}`}
+          >
+            {posBadge.side === "short" ? "S" : "L"} {posBadge.qty} @ {posBadge.entry.toFixed(2)} ·{" "}
+            {posBadge.pl >= 0 ? "+" : ""}${posBadge.pl.toFixed(2)} ({posBadge.plPct >= 0 ? "+" : ""}
+            {posBadge.plPct.toFixed(2)}%)
+          </span>
+        )}
+        {alertMsg && (
+          <span className="animate-pulse rounded bg-amber-500/20 px-2 py-1 text-[10px] font-medium text-amber-300">
+            {alertMsg}
+          </span>
+        )}
+        <OrderTicket paneSymbol={symbol} lastPrice={price} />
+      </div>
+      <div ref={containerRef} className="relative min-h-0 flex-1">
+        <DrawingLayer
+          getChart={() => chartRef.current}
+          getSeries={() => seriesRef.current}
+          storageKey={`lwc-draw-${paneId}-${symbol}`}
+          getBoxes={() => boxesRef.current}
+          getCandles={() => candlesRef.current}
+          onAnchorClick={onAnchorClick}
+          onLevels={onLevelsChange}
+        />
+        {instances.length > 0 && (
+          <div className="pointer-events-none absolute left-2 top-1.5 z-10 flex flex-wrap gap-x-3 gap-y-0.5">
+            {instances.map((inst, i) => {
+              const def = getIndicatorDef(inst.defId);
+              if (!def) return null;
+              const colorParam = def.params.find((p) => p.type === "color");
+              const color = colorParam ? String(inst.params[colorParam.key] ?? colorParam.default) : "#9ca3af";
+              const short = def.name.split(" — ")[0];
+              const len = inst.params.length;
+              return (
+                <span key={i} className="font-mono text-[10px] font-medium" style={{ color }}>
+                  {short}
+                  {typeof len === "number" ? ` ${len}` : ""}
+                </span>
+              );
+            })}
+          </div>
+        )}
+        {error && (
+          <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/60 px-4 text-center text-xs text-red-400">
+            {error}
+          </div>
+        )}
+      </div>
+      <TradeAlertDialog alert={pendingTrade} onClose={() => setPendingTrade(null)} />
+      <BacktestDialog
+        open={btOpen}
+        symbol={symbol}
+        timeframe={timeframe}
+        getCandles={() => candlesRef.current}
+        onResult={onBacktestResult}
+        onClose={() => setBtOpen(false)}
+      />
+      <BacktestResultPopup result={btResult} onClose={() => setBtResult(null)} />
+    </div>
+  );
+}
