@@ -24,12 +24,11 @@ import {
   PX_SIDE,
   type ProjectXCreds,
 } from "@/lib/platforms/projectx";
-import { readJson, writeJson } from "@/lib/server-store";
+import { storeDelete, storeList, storePut } from "@/lib/store";
 import type { Candle } from "@/lib/types";
 
 type Desired = "long" | "short" | "flat";
 
-const FILE = "futures-bots.json";
 const POLL_MS = 5_000;
 const MAX_EVENTS = 200;
 
@@ -111,8 +110,7 @@ const TF_UNIT_NUM: Record<BotTimeframe, number> = {
 // ── Store ─────────────────────────────────────────────────────────────────────
 
 async function loadBots(): Promise<FuturesBot[]> {
-  const list = await readJson<FuturesBot[]>(FILE, []);
-  return Array.isArray(list) ? list : [];
+  return storeList<FuturesBot>("futures-bots.json");
 }
 
 export async function listBots(uid: string | null): Promise<FuturesBot[]> {
@@ -121,17 +119,12 @@ export async function listBots(uid: string | null): Promise<FuturesBot[]> {
 }
 
 export async function saveBot(bot: FuturesBot): Promise<void> {
-  const bots = await loadBots();
-  const i = bots.findIndex((b) => b.id === bot.id);
-  if (i >= 0) bots[i] = bot;
-  else bots.push(bot);
-  await writeJson(FILE, bots);
+  await storePut("futures-bots.json", bot);
 }
 
 export async function deleteBot(id: string): Promise<void> {
   await stopBot(id);
-  const bots = await loadBots();
-  await writeJson(FILE, bots.filter((b) => b.id !== id));
+  await storeDelete("futures-bots.json", id);
 }
 
 export async function getBot(id: string): Promise<FuturesBot | undefined> {

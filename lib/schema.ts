@@ -19,6 +19,7 @@ export interface FirestoreTimestamp {
 export const COLLECTIONS = {
   USERS: "users",
   TRADING_ACCOUNTS: "tradingAccounts",
+  FUTURES_BOTS: "futuresBots",
   APP_SETTINGS: "appSettings",
   JOURNALS: "journals",
   CUSTOM_INDICATORS: "customIndicators",

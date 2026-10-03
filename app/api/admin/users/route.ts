@@ -3,10 +3,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { isAdmin } from "@/lib/admin-auth";
 import { adminAuth, adminConfigured } from "@/lib/firebase-admin";
-import { readJson, writeJson } from "@/lib/server-store";
+import { storeDelete, storeList, storePut } from "@/lib/store";
 import { toPublic, type TradingAccount } from "@/lib/settings";
-
-const FILE = "users.json";
 
 const createSchema = z.object({
   name: z.string().trim().min(1).max(60),
@@ -19,8 +17,7 @@ const createSchema = z.object({
 });
 
 async function load(): Promise<TradingAccount[]> {
-  const list = await readJson<TradingAccount[]>(FILE, []);
-  return Array.isArray(list) ? list : [];
+  return storeList<TradingAccount>("users.json");
 }
 
 export async function GET(req: NextRequest) {
@@ -70,7 +67,7 @@ export async function POST(req: NextRequest) {
     createdAt: new Date().toISOString(),
   };
   users.push(acct);
-  await writeJson(FILE, users);
+  await storePut("users.json", acct);
   return NextResponse.json({ data: { user: toPublic(acct) } });
 }
 
@@ -83,6 +80,6 @@ export async function DELETE(req: NextRequest) {
   if (next.length === users.length) {
     return NextResponse.json({ error: "Not found" }, { status: 404 });
   }
-  await writeJson(FILE, next);
+  await storeDelete("users.json", id);
   return NextResponse.json({ data: { ok: true } });
 }

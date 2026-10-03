@@ -1,13 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
 import { isAdmin } from "@/lib/admin-auth";
-import { readJson, writeJson } from "@/lib/server-store";
+import { getSettingsDoc, putSettingsDoc } from "@/lib/store";
 import { appSettingsSchema, DEFAULT_SETTINGS, type AppSettings } from "@/lib/settings";
-
-const FILE = "settings.json";
 
 /** Public read — settings hold no secrets (credentials live in env/accounts). */
 export async function GET() {
-  const stored = await readJson<Partial<AppSettings>>(FILE, {});
+  const stored = await getSettingsDoc<Partial<AppSettings>>({});
   const parsed = appSettingsSchema.safeParse({ ...DEFAULT_SETTINGS, ...stored });
   return NextResponse.json({ data: parsed.success ? parsed.data : DEFAULT_SETTINGS });
 }
@@ -17,7 +15,7 @@ export async function PUT(req: NextRequest) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
   const body = await req.json().catch(() => null);
-  const stored = await readJson<Partial<AppSettings>>(FILE, {});
+  const stored = await getSettingsDoc<Partial<AppSettings>>({});
   const merged = {
     ...DEFAULT_SETTINGS,
     ...stored,
@@ -32,6 +30,6 @@ export async function PUT(req: NextRequest) {
       { status: 400 },
     );
   }
-  await writeJson(FILE, parsed.data);
+  await putSettingsDoc(parsed.data);
   return NextResponse.json({ data: parsed.data });
 }

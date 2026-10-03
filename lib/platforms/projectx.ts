@@ -441,16 +441,14 @@ export async function userCredsFor(
   uid: string | null,
 ): Promise<ResolvedProjectX | null> {
   if (uid) {
-    const { readJson } = await import("@/lib/server-store");
-    const accounts = await readJson<
-      {
-        platform: string;
-        ownerUid?: string;
-        accountId?: number;
-        apiKey?: string;
-        apiSecret?: string;
-      }[]
-    >("users.json", []);
+    const { storeList } = await import("@/lib/store");
+    const accounts = await storeList<{
+      platform: string;
+      ownerUid?: string;
+      accountId?: number;
+      apiKey?: string;
+      apiSecret?: string;
+    }>("users.json");
     const mine = accounts.find(
       (a) => a.platform === platform && a.ownerUid === uid && a.apiKey && a.apiSecret,
     );

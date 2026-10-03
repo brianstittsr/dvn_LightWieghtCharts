@@ -29,6 +29,12 @@ service cloud.firestore {
       allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid;
     }
 
+    // Futures bots: owner only (configs, strategies, event log).
+    match /futuresBots/{id} {
+      allow read, write: if signedIn() && resource.data.ownerUid == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid;
+    }
+
     // Global settings: everyone reads, only admins write.
     match /appSettings/{doc} {
       allow read: if true;
