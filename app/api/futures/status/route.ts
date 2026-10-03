@@ -1,23 +1,30 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import {
-  credsFor,
   FUTURES_PLATFORMS,
   projectxAccounts,
   projectxToken,
+  userCredsFor,
 } from "@/lib/platforms/projectx";
+import { verifyUser } from "@/lib/server-auth";
 
 /** Which futures platforms are configured + their tradeable accounts. */
-export async function GET() {
+export async function GET(req: NextRequest) {
+  const uid = await verifyUser(req);
   const platforms = await Promise.all(
     FUTURES_PLATFORMS.map(async (id) => {
-      const creds = credsFor(id);
-      if (!creds) return { id, configured: false, accounts: [] };
+      const resolved = await userCredsFor(id, uid);
+      if (!resolved) return { id, configured: false, accounts: [] };
       try {
-        const token = await projectxToken(creds);
-        const accounts = (await projectxAccounts(creds, token))
+        const token = await projectxToken(resolved.creds);
+        const accounts = (await projectxAccounts(resolved.creds, token))
           .filter((a) => a.canTrade)
           .map((a) => ({ id: a.id, name: a.name, balance: a.balance }));
-        return { id, configured: true, accounts };
+        return {
+          id,
+          configured: true,
+          accounts,
+          linkedAccountId: resolved.accountId,
+        };
       } catch (e) {
         return {
           id,

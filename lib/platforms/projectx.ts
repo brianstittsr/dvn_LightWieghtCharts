@@ -52,13 +52,25 @@ async function pxFetch<T>(
   return (await res.json()) as T;
 }
 
+/** loginKey errorCode → actionable message (per ProjectX docs). */
+const LOGIN_ERRORS: Record<number, string> = {
+  3: "Invalid credentials — userName must be your platform login name (NOT your email), and the API key must be copied exactly from Settings > API.",
+  7: "Pending agreements — sign in to the trading platform and accept the required agreements first.",
+  9: "No active API subscription with your firm.",
+  10: "Your firm has API key authentication disabled — contact them.",
+};
+
 export async function projectxLogin(creds: ProjectXCreds): Promise<string> {
-  const r = await pxFetch<LoginKeyResponse>(creds, "/api/Auth/loginKey", null, {
-    userName: creds.userName,
-    apiKey: creds.apiKey,
-  });
+  const r = await pxFetch<LoginKeyResponse & { errorCode?: number }>(
+    creds,
+    "/api/Auth/loginKey",
+    null,
+    { userName: creds.userName, apiKey: creds.apiKey },
+  );
   if (!r.success || !r.token) {
-    throw new Error(r.errorMessage ?? "ProjectX auth failed");
+    throw new Error(
+      r.errorMessage ?? LOGIN_ERRORS[r.errorCode ?? -1] ?? `ProjectX auth failed (code ${r.errorCode ?? "?"})`,
+    );
   }
   return r.token;
 }
@@ -145,11 +157,14 @@ export async function projectxContracts(
   creds: ProjectXCreds,
   searchText: string,
 ): Promise<ProjectXContract[]> {
+  // Empty query → browse all available contracts (per docs' "placing your first order").
+  const path = searchText ? "/api/Contract/search" : "/api/Contract/available";
+  const body = searchText ? { live: false, searchText } : { live: false };
   const r = await pxFetch<SearchResponse<ProjectXContract> & { contracts?: ProjectXContract[] }>(
     creds,
-    "/api/Contract/search",
+    path,
     await projectxToken(creds),
-    { live: false, searchText },
+    body,
   );
   if (!r.success) throw new Error(r.errorMessage ?? "Contract search failed");
   return r.contracts ?? [];
@@ -252,11 +267,17 @@ export async function projectxCloseContract(
   if (!r.success) throw new Error(r.errorMessage ?? "Close failed");
 }
 
-/** Last traded price from the most recent 1-minute bar (REST has no quote stream). */
-export async function projectxLastPrice(
+/** ProjectX AggregateBarUnit enum. */
+export const PX_BAR_UNIT = { Second: 1, Minute: 2, Hour: 3, Day: 4, Week: 5, Month: 6 } as const;
+
+export async function projectxBars(
   creds: ProjectXCreds,
   contractId: string,
-): Promise<number | null> {
+  unit: number,
+  unitNumber: number,
+  lookbackMs: number,
+  limit = 500,
+): Promise<ProjectXBar[]> {
   const now = Date.now();
   const r = await pxFetch<SearchResponse<never> & { bars?: ProjectXBar[] }>(
     creds,
@@ -265,16 +286,39 @@ export async function projectxLastPrice(
     {
       contractId,
       live: false,
-      startTime: new Date(now - 24 * 60 * 60 * 1000).toISOString(),
+      startTime: new Date(now - lookbackMs).toISOString(),
       endTime: new Date(now).toISOString(),
-      unit: 3, // minutes
-      unitNumber: 1,
-      limit: 1,
+      unit,
+      unitNumber,
+      limit,
       includePartialBar: true,
     },
   );
   if (!r.success) throw new Error(r.errorMessage ?? "History request failed");
-  return r.bars?.length ? r.bars[r.bars.length - 1].c : null;
+  return r.bars ?? [];
+}
+
+/** Contract detail (tickSize/tickValue needed for points→ticks conversion). */
+export async function projectxContractById(
+  creds: ProjectXCreds,
+  contractId: string,
+): Promise<ProjectXContract | null> {
+  const r = await pxFetch<
+    SearchResponse<never> & { contract?: ProjectXContract }
+  >(creds, "/api/Contract/searchById", await projectxToken(creds), {
+    contractId,
+  });
+  if (!r.success) throw new Error(r.errorMessage ?? "Contract lookup failed");
+  return r.contract ?? null;
+}
+
+/** Last traded price from the most recent 1-minute bar (REST has no quote stream). */
+export async function projectxLastPrice(
+  creds: ProjectXCreds,
+  contractId: string,
+): Promise<number | null> {
+  const bars = await projectxBars(creds, contractId, PX_BAR_UNIT.Minute, 1, 24 * 60 * 60 * 1000, 1);
+  return bars.length ? bars[bars.length - 1].c : null;
 }
 
 export function topstepCreds(): ProjectXCreds | null {
@@ -295,6 +339,67 @@ export function credsFor(platform: string): ProjectXCreds | null {
   if (platform === "topstep") return topstepCreds();
   if (platform === "apex") return apexCreds();
   return null;
+}
+
+/** Creds + the account to trade on, resolved for a request. */
+export interface ResolvedProjectX {
+  creds: ProjectXCreds;
+  /** Preferred ProjectX account id — linked record, then env override. */
+  accountId?: number;
+}
+
+function envAccountId(platform: string): number | undefined {
+  const raw =
+    platform === "apex" ? process.env.APEX_ACCOUNT_ID : process.env.TOPSTEP_ACCOUNT_ID;
+  const n = Number(raw);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/**
+ * Resolve ProjectX creds for a request: the caller's own admin-managed account
+ * (matched by Firebase uid) first, then env-var creds as the shared fallback.
+ * For ProjectX platforms the account's `apiKey` field holds the platform
+ * username and `apiSecret` holds the ProjectX API key; `accountId` pins which
+ * eval/funded account orders route to (else the ticket's account picker).
+ */
+export async function userCredsFor(
+  platform: string,
+  uid: string | null,
+): Promise<ResolvedProjectX | null> {
+  if (uid) {
+    const { readJson } = await import("@/lib/server-store");
+    const accounts = await readJson<
+      {
+        platform: string;
+        ownerUid?: string;
+        accountId?: number;
+        apiKey?: string;
+        apiSecret?: string;
+      }[]
+    >("users.json", []);
+    const mine = accounts.find(
+      (a) => a.platform === platform && a.ownerUid === uid && a.apiKey && a.apiSecret,
+    );
+    if (mine?.apiKey && mine.apiSecret) {
+      const base = credsFor(platform);
+      return {
+        creds: {
+          userName: mine.apiKey,
+          apiKey: mine.apiSecret,
+          baseUrl: base?.baseUrl ?? defaultBaseUrl(platform),
+        },
+        accountId: mine.accountId ?? envAccountId(platform),
+      };
+    }
+  }
+  const creds = credsFor(platform);
+  return creds ? { creds, accountId: envAccountId(platform) } : null;
+}
+
+function defaultBaseUrl(platform: string): string {
+  return platform === "apex"
+    ? "https://api.apextraderfunding.com"
+    : "https://api.topstepx.com";
 }
 
 export function apexCreds(): ProjectXCreds | null {

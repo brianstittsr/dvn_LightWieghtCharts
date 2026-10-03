@@ -41,6 +41,8 @@ export interface TradingAccount {
   ownerEmail?: string;
   name: string;
   platform: "alpaca" | "topstep" | "apex" | "schwab" | "ninjatrader";
+  /** Platform-specific account id (e.g. ProjectX account id for TopStep/Apex). */
+  accountId?: number;
   apiKey?: string;
   apiSecret?: string;
   notes?: string;
@@ -63,6 +65,7 @@ export function toPublic(a: TradingAccount): PublicAccount {
     ownerEmail: a.ownerEmail,
     name: a.name,
     platform: a.platform,
+    accountId: a.accountId,
     notes: a.notes,
     createdAt: a.createdAt,
     apiKeyMasked: mask(a.apiKey),

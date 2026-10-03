@@ -12,6 +12,7 @@ const createSchema = z.object({
   name: z.string().trim().min(1).max(60),
   ownerEmail: z.string().trim().email().max(200).optional(),
   platform: z.enum(["alpaca", "topstep", "apex", "schwab", "ninjatrader"]),
+  accountId: z.number().int().positive().optional(),
   apiKey: z.string().trim().max(200).optional(),
   apiSecret: z.string().trim().max(200).optional(),
   notes: z.string().trim().max(500).optional(),

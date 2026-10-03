@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import {
-  credsFor,
+  userCredsFor,
   projectxCancelOrder,
   projectxCloseContract,
   projectxOpenOrders,
@@ -10,10 +10,12 @@ import {
   PX_ORDER_TYPE,
   PX_SIDE,
 } from "@/lib/platforms/projectx";
+import { verifyUser } from "@/lib/server-auth";
 
 const base = z.object({
   platform: z.enum(["topstep", "apex"]),
-  accountId: z.number().int().positive(),
+  /** Optional — falls back to the account id pinned on the linked record/env. */
+  accountId: z.number().int().positive().optional(),
 });
 
 const placeSchema = base.extend({
@@ -50,10 +52,20 @@ export async function POST(req: NextRequest) {
     );
   }
   const body = parsed.data;
-  const creds = credsFor(body.platform);
-  if (!creds) {
+  const resolved = await userCredsFor(body.platform, await verifyUser(req));
+  if (!resolved) {
     return NextResponse.json(
-      { error: `${body.platform} credentials are not configured` },
+      {
+        error: `No ${body.platform} account linked to your login — add one in Admin → Trading accounts (API key field = platform username, secret = API key)`,
+      },
+      { status: 400 },
+    );
+  }
+  const creds = resolved.creds;
+  const accountId = parsed.data.accountId ?? resolved.accountId;
+  if (!accountId) {
+    return NextResponse.json(
+      { error: "accountId required — none provided and none pinned on the linked account" },
       { status: 400 },
     );
   }
@@ -68,7 +80,7 @@ export async function POST(req: NextRequest) {
           );
         }
         const { orderId } = await projectxPlaceOrder(creds, {
-          accountId: body.accountId,
+          accountId: accountId,
           contractId: body.contractId,
           type: TYPE_MAP[body.type],
           side: body.side === "buy" ? PX_SIDE.Buy : PX_SIDE.Sell,
@@ -83,19 +95,19 @@ export async function POST(req: NextRequest) {
 
       case "close": {
         if (!body.contractId) return NextResponse.json({ error: "contractId required" }, { status: 400 });
-        await projectxCloseContract(creds, body.accountId, body.contractId);
+        await projectxCloseContract(creds, accountId, body.contractId);
         return NextResponse.json({ data: { ok: true } });
       }
 
       case "reverse": {
         if (!body.contractId) return NextResponse.json({ error: "contractId required" }, { status: 400 });
-        const pos = (await projectxOpenPositions(creds, body.accountId)).find(
+        const pos = (await projectxOpenPositions(creds, accountId)).find(
           (p) => p.contractId === body.contractId,
         );
         if (!pos) return NextResponse.json({ error: "No open position on this contract" }, { status: 404 });
-        await projectxCloseContract(creds, body.accountId, body.contractId);
+        await projectxCloseContract(creds, accountId, body.contractId);
         const { orderId } = await projectxPlaceOrder(creds, {
-          accountId: body.accountId,
+          accountId: accountId,
           contractId: body.contractId,
           type: PX_ORDER_TYPE.Market,
           side: pos.type === 1 ? PX_SIDE.Sell : PX_SIDE.Buy,
@@ -107,25 +119,25 @@ export async function POST(req: NextRequest) {
 
       case "cancelContract": {
         if (!body.contractId) return NextResponse.json({ error: "contractId required" }, { status: 400 });
-        const orders = (await projectxOpenOrders(creds, body.accountId)).filter(
+        const orders = (await projectxOpenOrders(creds, accountId)).filter(
           (o) => o.contractId === body.contractId,
         );
-        await Promise.all(orders.map((o) => projectxCancelOrder(creds, body.accountId, o.id)));
+        await Promise.all(orders.map((o) => projectxCancelOrder(creds, accountId, o.id)));
         return NextResponse.json({ data: { cancelled: orders.length } });
       }
 
       case "cancelAll": {
-        const orders = await projectxOpenOrders(creds, body.accountId);
-        await Promise.all(orders.map((o) => projectxCancelOrder(creds, body.accountId, o.id)));
+        const orders = await projectxOpenOrders(creds, accountId);
+        await Promise.all(orders.map((o) => projectxCancelOrder(creds, accountId, o.id)));
         return NextResponse.json({ data: { cancelled: orders.length } });
       }
 
       case "flattenAll": {
-        const positions = await projectxOpenPositions(creds, body.accountId);
-        const orders = await projectxOpenOrders(creds, body.accountId);
+        const positions = await projectxOpenPositions(creds, accountId);
+        const orders = await projectxOpenOrders(creds, accountId);
         await Promise.all([
-          ...positions.map((p) => projectxCloseContract(creds, body.accountId, p.contractId)),
-          ...orders.map((o) => projectxCancelOrder(creds, body.accountId, o.id)),
+          ...positions.map((p) => projectxCloseContract(creds, accountId, p.contractId)),
+          ...orders.map((o) => projectxCancelOrder(creds, accountId, o.id)),
         ]);
         return NextResponse.json({
           data: { closed: positions.length, cancelled: orders.length },

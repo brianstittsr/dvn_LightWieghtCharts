@@ -8,6 +8,7 @@ import { PositionsBar } from "@/components/positions-bar";
 import { MarketStatus } from "@/components/market-status";
 import { PnlCalendar } from "@/components/pnl-calendar";
 import { EconomicCalendar } from "@/components/economic-calendar";
+import { FuturesBots } from "@/components/futures-bots";
 import { FuturesTicket } from "@/components/futures-ticket";
 import { PlatformsDialog } from "@/components/platforms-dialog";
 import { CHART_COUNTS, useChartCount } from "@/hooks/use-chart-count";
@@ -30,6 +31,7 @@ export function Dashboard() {
   const [econOpen, setEconOpen] = useState(false);
   const [platOpen, setPlatOpen] = useState(false);
   const [futOpen, setFutOpen] = useState(false);
+  const [botsOpen, setBotsOpen] = useState(false);
   const [userEmail, setUserEmail] = useState<string | null>(null);
 
   useEffect(() => {
@@ -87,6 +89,20 @@ export function Dashboard() {
         >
           ⚡ Futures
         </button>
+        <button
+          onClick={() => setBotsOpen(true)}
+          title="Futures trading bots"
+          className="rounded bg-neutral-800 px-2.5 py-1 text-xs font-medium text-neutral-300 hover:bg-neutral-700"
+        >
+          🤖 Bots
+        </button>
+        <Link
+          href="/prop-firm"
+          title="Prop firm challenge calculator"
+          className="rounded bg-neutral-800 px-2.5 py-1 text-xs font-medium text-neutral-300 hover:bg-neutral-700"
+        >
+          🧮 Prop Firm
+        </Link>
         <Link
           href="/admin"
           title="Admin — accounts & settings"
@@ -124,6 +140,7 @@ export function Dashboard() {
       <EconomicCalendar open={econOpen} onClose={() => setEconOpen(false)} />
       <PlatformsDialog open={platOpen} onClose={() => setPlatOpen(false)} />
       <FuturesTicket open={futOpen} onClose={() => setFutOpen(false)} />
+      <FuturesBots open={botsOpen} onClose={() => setBotsOpen(false)} />
     </div>
   );
 }

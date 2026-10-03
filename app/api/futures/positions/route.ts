@@ -1,16 +1,19 @@
 import { NextRequest, NextResponse } from "next/server";
-import { credsFor, projectxOpenPositions } from "@/lib/platforms/projectx";
+import { projectxOpenPositions, userCredsFor } from "@/lib/platforms/projectx";
+import { verifyUser } from "@/lib/server-auth";
 
-/** GET ?platform=&accountId= — open futures positions. */
+/** GET ?platform=&accountId= — open futures positions. accountId may be
+ *  omitted when the linked account record pins one. */
 export async function GET(req: NextRequest) {
   const platform = req.nextUrl.searchParams.get("platform") ?? "";
-  const accountId = Number(req.nextUrl.searchParams.get("accountId"));
-  const creds = credsFor(platform);
-  if (!creds || !Number.isFinite(accountId)) {
+  const resolved = await userCredsFor(platform, await verifyUser(req));
+  const accountId =
+    Number(req.nextUrl.searchParams.get("accountId")) || resolved?.accountId;
+  if (!resolved || !accountId) {
     return NextResponse.json({ error: "platform + accountId required" }, { status: 400 });
   }
   try {
-    const positions = await projectxOpenPositions(creds, accountId);
+    const positions = await projectxOpenPositions(resolved.creds, accountId);
     return NextResponse.json({
       data: {
         positions: positions.map((p) => ({

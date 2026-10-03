@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import type { DayPnl } from "@/app/api/alpaca/pnl/route";
 import { cn, signed, usd } from "@/lib/utils";
 
@@ -19,6 +19,14 @@ const etTime = new Intl.DateTimeFormat("en-US", {
   timeZone: "America/New_York",
   hour12: false,
   hour: "2-digit",
+  minute: "2-digit",
+});
+
+/** Fill time in New York (h:mm AM/PM) — matches the trade-list style. */
+const etTimeAmPm = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  hour12: true,
+  hour: "numeric",
   minute: "2-digit",
 });
 
@@ -64,14 +72,34 @@ export function PnlDayDetail({ day, hideAmounts, onClose, onJournalSaved }: PnlD
   // initializers always load the journal for the selected day.
   const [journal, setJournal] = useState<DayJournal>(() => readJournal(day.date));
   const [journalMsg, setJournalMsg] = useState<string | null>(null);
+  const [tab, setTab] = useState<"charts" | "list">("charts");
 
   const [y, m, d] = day.date.split("-").map(Number);
   const title = new Date(y, m - 1, d).toLocaleDateString("en-US", {
-    weekday: "short",
-    month: "short",
+    weekday: "long",
+    month: "long",
     day: "numeric",
     year: "numeric",
   });
+
+  /**
+   * Round-trip series: one entry per fill that closed qty — drives the
+   * cumulative P/L curve, the per-trade bar chart, and the W/L/BE badges.
+   */
+  const stats = useMemo(() => {
+    const closers = [...day.details]
+      .filter((t) => t.closedQty > 0)
+      .sort((a, b) => new Date(a.time).getTime() - new Date(b.time).getTime());
+    const points = closers.reduce<{ time: string; value: number; tradePnl: number }[]>(
+      (acc, t, i) => [
+        ...acc,
+        { time: t.time, value: (acc[i - 1]?.value ?? 0) + t.realized, tradePnl: t.realized },
+      ],
+      [],
+    );
+    const be = closers.filter((t) => t.realized === 0).length;
+    return { points, trades: closers.length, breakeven: be };
+  }, [day.details]);
 
   async function submitOrder(): Promise<void> {
     const qty = Number(orderQty);
@@ -119,21 +147,44 @@ export function PnlDayDetail({ day, hideAmounts, onClose, onJournalSaved }: PnlD
       }}
     >
       <div
-        className="max-h-[85vh] w-full max-w-lg overflow-y-auto rounded-lg border border-neutral-700 bg-[#0d0f13] p-4 shadow-2xl"
+        className="max-h-[85vh] w-full max-w-2xl overflow-y-auto rounded-lg border border-neutral-700 bg-[#0d0f13] p-4 shadow-2xl"
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="mb-3 flex items-center justify-between">
+        <div className="mb-3 flex items-start justify-between">
           <div>
-            <h3 className="text-sm font-bold text-neutral-100">{title}</h3>
-            <span
-              className={cn(
-                "font-mono text-sm font-semibold",
-                day.pnl > 0 ? "text-green-400" : day.pnl < 0 ? "text-red-400" : "text-neutral-400",
+            <h3 className="flex items-center gap-1.5 text-sm font-bold text-neutral-100">
+              <span className={day.pnl >= 0 ? "text-green-400" : "text-red-400"}>
+                {day.pnl >= 0 ? "↗" : "↘"}
+              </span>
+              Trade Details - {title}
+            </h3>
+            <div className="mt-1.5 flex flex-wrap gap-1.5 text-[10px] font-semibold">
+              <span
+                className={cn(
+                  "rounded px-1.5 py-0.5",
+                  day.pnl >= 0 ? "bg-green-900/60 text-green-300" : "bg-red-900/60 text-red-300",
+                )}
+              >
+                Daily P/L: {fmtSigned(day.pnl)}
+              </span>
+              <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-300">
+                {day.trades} Total Trades
+              </span>
+              <span className="rounded bg-green-900/60 px-1.5 py-0.5 text-green-300">
+                {day.wins} Wins
+              </span>
+              {day.losses > 0 && (
+                <span className="rounded bg-red-900/60 px-1.5 py-0.5 text-red-300">
+                  {day.losses} Losses
+                </span>
               )}
-            >
-              {fmtSigned(day.pnl)}
-            </span>
+              {stats.breakeven > 0 && (
+                <span className="rounded bg-green-900/40 px-1.5 py-0.5 text-green-200">
+                  {stats.breakeven} B/E
+                </span>
+              )}
+            </div>
           </div>
           <button
             onClick={onClose}
@@ -144,57 +195,106 @@ export function PnlDayDetail({ day, hideAmounts, onClose, onJournalSaved }: PnlD
           </button>
         </div>
 
-        {/* Fills */}
-        <div className="mb-3">
-          <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-neutral-500">
-            Trades ({day.details.length})
-          </div>
-          {day.details.length === 0 ? (
-            <div className="rounded bg-neutral-900/60 px-3 py-2 text-xs text-neutral-500">
-              No fills recorded for this day.
-            </div>
-          ) : (
-            <div className="divide-y divide-neutral-800/60 rounded border border-neutral-800">
-              {day.details.map((t, i) => (
-                <div key={`${t.time}-${t.symbol}-${i}`} className="flex items-center gap-2 px-2 py-1.5 text-xs">
-                  <span className="w-11 shrink-0 font-mono text-neutral-500">
-                    {etTime.format(new Date(t.time))}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate font-mono font-semibold text-neutral-200" title={t.symbol}>
-                    {t.symbol}
-                    {t.assetClass === "option" && (
-                      <span className="ml-1 rounded bg-blue-900/50 px-1 text-[9px] font-normal text-blue-300">
-                        OPT
-                      </span>
-                    )}
-                  </span>
-                  <span
-                    className={cn(
-                      "w-8 shrink-0 text-[10px] font-bold uppercase",
-                      t.side === "buy" ? "text-green-400" : "text-red-400",
-                    )}
-                  >
-                    {t.side}
-                  </span>
-                  <span className="shrink-0 font-mono text-neutral-300">
-                    {t.qty} @ {fmt(t.price)}
-                  </span>
-                  <span className="w-20 shrink-0 text-right font-mono">
-                    {t.closedQty === 0 ? (
-                      <span className="rounded bg-neutral-800 px-1 text-[9px] font-semibold text-neutral-400">
-                        OPEN
-                      </span>
-                    ) : (
-                      <span className={t.realized > 0 ? "text-green-400" : t.realized < 0 ? "text-red-400" : "text-neutral-400"}>
-                        {fmtSigned(t.realized)}
-                      </span>
-                    )}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
+        {/* Tabs */}
+        <div className="mb-3 grid grid-cols-2 overflow-hidden rounded border border-neutral-700">
+          {(["charts", "list"] as const).map((t) => (
+            <button
+              key={t}
+              onClick={() => setTab(t)}
+              className={cn(
+                "py-1.5 text-xs font-semibold",
+                tab === t
+                  ? "bg-neutral-700 text-white"
+                  : "bg-neutral-900/60 text-neutral-400 hover:text-neutral-200",
+              )}
+            >
+              {t === "charts" ? "Charts" : "Trade List"}
+            </button>
+          ))}
         </div>
+
+        {tab === "charts" ? (
+          <div className="mb-3">
+            {stats.points.length === 0 ? (
+              <div className="rounded bg-neutral-900/60 px-3 py-6 text-center text-xs text-neutral-500">
+                No closed trades to chart for this day.
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+                <ChartCard title="Cumulative P/L">
+                  <CumulativeChart points={stats.points} />
+                </ChartCard>
+                <ChartCard title="P/L by Trade">
+                  <TradeBars points={stats.points} />
+                </ChartCard>
+              </div>
+            )}
+          </div>
+        ) : (
+          /* Trade list */
+          <div className="mb-3">
+            {day.details.length === 0 ? (
+              <div className="rounded bg-neutral-900/60 px-3 py-2 text-xs text-neutral-500">
+                No fills recorded for this day.
+              </div>
+            ) : (
+              <table className="w-full text-xs">
+                <thead>
+                  <tr className="border-b border-neutral-800 text-left text-[10px] uppercase tracking-wide text-neutral-500">
+                    <th className="py-1.5 pr-3">Time</th>
+                    <th className="pr-3">Symbol</th>
+                    <th className="pr-3">Side</th>
+                    <th className="pr-3 text-right">Qty</th>
+                    <th className="pr-3 text-right">Price</th>
+                    <th className="text-right">P/L</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {day.details.map((t, i) => (
+                    <tr key={`${t.time}-${t.symbol}-${i}`} className="border-b border-neutral-800/60 last:border-0">
+                      <td className="py-2 pr-3 font-mono text-neutral-400">
+                        {etTimeAmPm.format(new Date(t.time))}
+                      </td>
+                      <td className="pr-3 font-mono font-semibold text-neutral-200">
+                        {t.symbol}
+                        {t.assetClass === "option" && (
+                          <span className="ml-1 rounded bg-blue-900/50 px-1 text-[9px] font-normal text-blue-300">
+                            OPT
+                          </span>
+                        )}
+                      </td>
+                      <td className="pr-3">
+                        <span
+                          className={cn(
+                            "rounded px-1.5 py-0.5 text-[9px] font-bold uppercase",
+                            t.side === "buy"
+                              ? "bg-blue-900/60 text-blue-300"
+                              : "bg-orange-900/60 text-orange-300",
+                          )}
+                        >
+                          {t.side}
+                        </span>
+                      </td>
+                      <td className="pr-3 text-right font-mono text-neutral-300">{t.qty}</td>
+                      <td className="pr-3 text-right font-mono text-neutral-300">{fmt(t.price)}</td>
+                      <td className="text-right font-mono">
+                        {t.closedQty === 0 ? (
+                          <span className="rounded bg-neutral-800 px-1 text-[9px] font-semibold text-neutral-400">
+                            OPEN
+                          </span>
+                        ) : (
+                          <span className={t.realized > 0 ? "text-green-400" : t.realized < 0 ? "text-red-400" : "text-neutral-400"}>
+                            {fmtSigned(t.realized)}
+                          </span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
 
         {/* Quick order */}
         <div className="mb-3 rounded border border-neutral-800 p-2">
@@ -304,5 +404,140 @@ export function PnlDayDetail({ day, hideAmounts, onClose, onJournalSaved }: PnlD
         </div>
       </div>
     </div>
+  );
+}
+
+/* ── Charts ─────────────────────────────────────────────── */
+
+const CW = 320;
+const CH = 150;
+const PAD = { l: 46, r: 8, t: 10, b: 18 };
+
+interface CumPoint {
+  time: string;
+  value: number;
+  tradePnl: number;
+}
+
+function niceCeil(v: number): number {
+  if (v <= 0) return 0;
+  const p = 10 ** Math.floor(Math.log10(v));
+  const f = v / p;
+  return (f <= 1 ? 1 : f <= 2 ? 2 : f <= 2.5 ? 2.5 : f <= 5 ? 5 : 10) * p;
+}
+
+/** Shared y-scale helper: returns y pixel for a value within the chart box. */
+function yScale(min: number, max: number): (v: number) => number {
+  const ih = CH - PAD.t - PAD.b;
+  const span = max - min || 1;
+  return (v) => PAD.t + ih * (1 - (v - min) / span);
+}
+
+function ChartCard({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded border border-neutral-800 p-2">
+      <div className="mb-1 text-[10px] font-semibold uppercase tracking-widest text-neutral-500">
+        {title}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+/** Cumulative P/L area chart across the day's closed trades. */
+function CumulativeChart({ points }: { points: CumPoint[] }) {
+  const iw = CW - PAD.l - PAD.r;
+  const values = [0, ...points.map((p) => p.value)];
+  const rawMax = Math.max(...values);
+  const rawMin = Math.min(...values);
+  const max = rawMax > 0 ? niceCeil(rawMax) : 0;
+  const min = rawMin < 0 ? -niceCeil(-rawMin) : 0;
+  const y = yScale(min, max || 1);
+  const x = (i: number) => PAD.l + (i / Math.max(1, points.length)) * iw;
+  const linePts = points.map((p, i) => `${x(i + 1)},${y(p.value)}`).join(" ");
+  const base = y(Math.max(0, min));
+  const ticks = [min, min / 2 || 0, 0, max / 2, max].filter(
+    (v, i, a) => a.indexOf(v) === i,
+  );
+
+  return (
+    <svg viewBox={`0 0 ${CW} ${CH}`} className="w-full">
+      <defs>
+        <linearGradient id="cumFill" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#22c55e" stopOpacity="0.35" />
+          <stop offset="100%" stopColor="#22c55e" stopOpacity="0.02" />
+        </linearGradient>
+      </defs>
+      {ticks.map((v) => (
+        <g key={v}>
+          <line x1={PAD.l} x2={CW - PAD.r} y1={y(v)} y2={y(v)} stroke="#262a33" strokeDasharray={v === 0 ? "" : "3 3"} />
+          <text x={PAD.l - 4} y={y(v) + 3} textAnchor="end" fontSize="8" fill="#6b7280">
+            {v === 0 ? "$0" : `$${Math.round(v)}`}
+          </text>
+        </g>
+      ))}
+      <polygon points={`${x(0)},${base} ${linePts} ${x(points.length)},${base}`} fill="url(#cumFill)" />
+      <polyline points={`${x(0)},${y(0)} ${linePts}`} fill="none" stroke="#22c55e" strokeWidth="1.5" />
+      <text x={x(0) + 2} y={CH - 4} fontSize="8" fill="#6b7280">
+        {etTime.format(new Date(points[0].time))}
+      </text>
+      <text x={CW - PAD.r} y={CH - 4} textAnchor="end" fontSize="8" fill="#6b7280">
+        {etTime.format(new Date(points[points.length - 1].time))}
+      </text>
+    </svg>
+  );
+}
+
+/** Per-trade P/L bar chart (#1, #2, … across the x axis). */
+function TradeBars({ points }: { points: CumPoint[] }) {
+  const iw = CW - PAD.l - PAD.r;
+  const rawMax = Math.max(0, ...points.map((p) => p.tradePnl));
+  const rawMin = Math.min(0, ...points.map((p) => p.tradePnl));
+  const max = rawMax > 0 ? niceCeil(rawMax) : 0;
+  const min = rawMin < 0 ? -niceCeil(-rawMin) : 0;
+  const y = yScale(min, max || 1);
+  const slot = iw / points.length;
+  const bw = Math.min(28, slot * 0.6);
+  const ticks = [min, min / 2 || 0, 0, max / 2, max].filter(
+    (v, i, a) => a.indexOf(v) === i,
+  );
+
+  return (
+    <svg viewBox={`0 0 ${CW} ${CH}`} className="w-full">
+      {ticks.map((v) => (
+        <g key={v}>
+          <line x1={PAD.l} x2={CW - PAD.r} y1={y(v)} y2={y(v)} stroke="#262a33" strokeDasharray={v === 0 ? "" : "3 3"} />
+          <text x={PAD.l - 4} y={y(v) + 3} textAnchor="end" fontSize="8" fill="#6b7280">
+            {v === 0 ? "$0" : `$${Math.round(v)}`}
+          </text>
+        </g>
+      ))}
+      {points.map((p, i) => {
+        const h = Math.abs(y(p.tradePnl) - y(0));
+        return (
+          <g key={i}>
+            <rect
+              x={PAD.l + i * slot + (slot - bw) / 2}
+              y={p.tradePnl >= 0 ? y(p.tradePnl) : y(0)}
+              width={bw}
+              height={Math.max(1, h)}
+              rx="1"
+              fill={p.tradePnl > 0 ? "#22c55e" : p.tradePnl < 0 ? "#ef4444" : "#6b7280"}
+            />
+            {points.length <= 16 && (
+              <text
+                x={PAD.l + i * slot + slot / 2}
+                y={CH - 4}
+                textAnchor="middle"
+                fontSize="8"
+                fill="#6b7280"
+              >
+                #{i + 1}
+              </text>
+            )}
+          </g>
+        );
+      })}
+    </svg>
   );
 }

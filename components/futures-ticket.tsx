@@ -1,7 +1,21 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { getClientAuth } from "@/lib/firebase";
 import { cn } from "@/lib/utils";
+
+/** fetch() that attaches the current Firebase ID token, when signed in. */
+async function authFetch(path: string, init?: RequestInit): Promise<Response> {
+  const auth = getClientAuth();
+  const token = await auth?.currentUser?.getIdToken();
+  return fetch(path, {
+    ...init,
+    headers: {
+      ...(init?.headers ?? {}),
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+}
 
 interface FutAccount {
   id: number;
@@ -12,6 +26,7 @@ interface FutPlatform {
   id: string;
   configured: boolean;
   accounts: FutAccount[];
+  linkedAccountId?: number;
   error?: string;
 }
 interface FutContract {
@@ -72,7 +87,7 @@ export function FuturesTicket({
   // Load configured platforms + accounts when opened.
   useEffect(() => {
     if (!open) return;
-    fetch("/api/futures/status")
+    authFetch("/api/futures/status")
       .then((r) => r.json())
       .then((d) => {
         const list: FutPlatform[] = d.data?.platforms ?? [];
@@ -80,7 +95,7 @@ export function FuturesTicket({
         const first = list.find((p) => p.accounts.length > 0);
         if (first) {
           setPlatform(first.id);
-          setAccountId(first.accounts[0].id);
+          setAccountId(first.linkedAccountId ?? first.accounts[0].id);
         }
       })
       .catch(() => setErr("Failed to load futures platforms"));
@@ -90,7 +105,7 @@ export function FuturesTicket({
   useEffect(() => {
     if (!open || !platform) return;
     const t = setTimeout(() => {
-      fetch(`/api/futures/contracts?platform=${platform}&q=${encodeURIComponent(searchQ)}`)
+      authFetch(`/api/futures/contracts?platform=${platform}&q=${encodeURIComponent(searchQ)}`)
         .then((r) => r.json())
         .then((d) => {
           const list: FutContract[] = d.data?.contracts ?? [];
@@ -107,11 +122,11 @@ export function FuturesTicket({
   // Poll quote + positions while open.
   const refresh = useCallback(() => {
     if (!platform || !accountId || !contractId) return;
-    fetch(`/api/futures/quote?platform=${platform}&contractId=${encodeURIComponent(contractId)}`)
+    authFetch(`/api/futures/quote?platform=${platform}&contractId=${encodeURIComponent(contractId)}`)
       .then((r) => r.json())
       .then((d) => setLast(d.data?.last ?? null))
       .catch(() => {});
-    fetch(`/api/futures/positions?platform=${platform}&accountId=${accountId}`)
+    authFetch(`/api/futures/positions?platform=${platform}&accountId=${accountId}`)
       .then((r) => r.json())
       .then((d) => setPositions(d.data?.positions ?? []))
       .catch(() => {});
@@ -131,7 +146,7 @@ export function FuturesTicket({
     setErr("");
     setMsg("");
     try {
-      const res = await fetch("/api/futures/order", {
+      const res = await authFetch("/api/futures/order", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ platform, accountId, ...body }),
@@ -193,9 +208,11 @@ export function FuturesTicket({
 
         {configured.length === 0 ? (
           <p className="rounded border border-amber-700/40 bg-amber-900/20 p-3 text-xs text-amber-300">
-            No futures platform configured. Set <code>TOPSTEP_USERNAME</code>/
-            <code>TOPSTEP_API_KEY</code> (or <code>APEX_*</code>) in
-            <code> .env.local</code> and restart.
+            No futures account linked to your login. In <strong>Admin →
+            Trading accounts</strong>, add a TopStep/Apex account with your
+            email as owner — username in the key field, ProjectX API key in
+            the secret field. (Or set <code>TOPSTEP_*</code>/<code>APEX_*</code>
+            in <code>.env.local</code> as a shared fallback.)
           </p>
         ) : (
           <>
@@ -208,7 +225,7 @@ export function FuturesTicket({
                   onChange={(e) => {
                     setPlatform(e.target.value);
                     const p = platforms.find((x) => x.id === e.target.value);
-                    setAccountId(p?.accounts[0]?.id ?? null);
+                    setAccountId(p?.linkedAccountId ?? p?.accounts[0]?.id ?? null);
                   }}
                   className={sel}
                 >
@@ -230,6 +247,7 @@ export function FuturesTicket({
                   {(plat?.accounts ?? []).map((a) => (
                     <option key={a.id} value={a.id}>
                       {a.name} · ${a.balance.toLocaleString()}
+                      {a.id === plat?.linkedAccountId ? " ★" : ""}
                     </option>
                   ))}
                 </select>

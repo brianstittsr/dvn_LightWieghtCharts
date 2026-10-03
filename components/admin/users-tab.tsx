@@ -9,6 +9,7 @@ const EMPTY_FORM = {
   name: "",
   ownerEmail: "",
   platform: "alpaca",
+  accountId: "",
   apiKey: "",
   apiSecret: "",
   notes: "",
@@ -56,6 +57,7 @@ export default function UsersTab() {
           name: form.name,
           ownerEmail: form.ownerEmail || undefined,
           platform: form.platform,
+          accountId: form.accountId ? Number(form.accountId) : undefined,
           apiKey: form.apiKey || undefined,
           apiSecret: form.apiSecret || undefined,
           notes: form.notes || undefined,
@@ -108,6 +110,19 @@ export default function UsersTab() {
               u.email ? <option key={u.uid} value={u.email} /> : null,
             )}
           </datalist>
+          <input
+            aria-label="Platform account ID"
+            type="number"
+            min={1}
+            placeholder={
+              ["topstep", "apex"].includes(form.platform)
+                ? "ProjectX account ID (pins which account trades)"
+                : "Account ID (optional)"
+            }
+            value={form.accountId}
+            onChange={(e) => setForm({ ...form, accountId: e.target.value })}
+            className={input}
+          />
           <select
             aria-label="Platform"
             value={form.platform}
@@ -122,7 +137,11 @@ export default function UsersTab() {
           </select>
           <input
             aria-label="API key or username"
-            placeholder="API key / username (optional)"
+            placeholder={
+              ["topstep", "apex"].includes(form.platform)
+                ? "Platform username (not email)"
+                : "API key / username (optional)"
+            }
             value={form.apiKey}
             onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
             className={input}
@@ -130,7 +149,11 @@ export default function UsersTab() {
           <input
             aria-label="API secret"
             type="password"
-            placeholder="API secret (optional)"
+            placeholder={
+              ["topstep", "apex"].includes(form.platform)
+                ? "ProjectX API key (Settings > API)"
+                : "API secret (optional)"
+            }
             value={form.apiSecret}
             onChange={(e) => setForm({ ...form, apiSecret: e.target.value })}
             className={input}
@@ -170,6 +193,7 @@ export default function UsersTab() {
                 <th className="px-4 py-2 font-medium">Name</th>
                 <th className="px-4 py-2 font-medium">Owner</th>
                 <th className="px-4 py-2 font-medium">Platform</th>
+                <th className="px-4 py-2 font-medium">Acct ID</th>
                 <th className="px-4 py-2 font-medium">Key</th>
                 <th className="px-4 py-2 font-medium">Notes</th>
                 <th className="px-4 py-2" />
@@ -183,6 +207,9 @@ export default function UsersTab() {
                     {u.ownerEmail ?? "—"}
                   </td>
                   <td className="px-4 py-2.5 capitalize text-gray-400">{u.platform}</td>
+                  <td className="px-4 py-2.5 font-mono text-xs text-gray-500">
+                    {u.accountId ?? "—"}
+                  </td>
                   <td className="px-4 py-2.5 font-mono text-xs text-gray-500">
                     {u.apiKeyMasked ?? "—"}
                     {u.hasSecret && " + secret"}

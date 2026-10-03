@@ -26,7 +26,7 @@ export const PLATFORMS: PlatformDef[] = [
     kind: "prop",
     envVars: ["TOPSTEP_USERNAME", "TOPSTEP_API_KEY"],
     setup:
-      "TopStepX uses the ProjectX API. In your TopStep dashboard: Settings → API → generate a key, then set TOPSTEP_USERNAME and TOPSTEP_API_KEY in .env.local.",
+      "TopStepX uses the ProjectX API. Sign in at topstepx.com → Settings > API (topstepx.com/settings?tab=api) → generate a key. TOPSTEP_USERNAME is your platform login name — NOT your email. Set both in .env.local.",
     capabilities: ["Eval/funded account balance", "Positions", "Futures orders"],
   },
   {
