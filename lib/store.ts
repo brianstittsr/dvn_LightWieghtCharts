@@ -32,12 +32,28 @@ const COLLECTIONS: Record<StoreFile, string> = {
 
 const SETTINGS_DOC = "appSettings/app";
 
-function firestore(): boolean {
-  try {
-    return adminConfigured();
-  } catch {
-    return false;
-  }
+/**
+ * One-time probe: env vars present AND a real Firestore call succeeds.
+ * A malformed FIREBASE_PRIVATE_KEY (e.g. real newlines pasted into Vercel)
+ * passes adminConfigured() but throws here — cache the failure so every
+ * request degrades to the JSON store instead of 500-ing.
+ */
+let probe: Promise<boolean> | null = null;
+function firestore(): Promise<boolean> {
+  probe ??= (async () => {
+    try {
+      if (!adminConfigured()) return false;
+      await adminDb().listCollections(); // validates the creds for real
+      return true;
+    } catch (e) {
+      console.error(
+        "[store] Firestore unavailable — falling back to data/*.json:",
+        e instanceof Error ? e.message : e,
+      );
+      return false;
+    }
+  })();
+  return probe;
 }
 
 interface Entity {
@@ -46,7 +62,7 @@ interface Entity {
 
 /** All documents in a store (Firestore collection or JSON array file). */
 export async function storeList<T>(file: StoreFile): Promise<T[]> {
-  if (firestore()) {
+  if (await firestore()) {
     const snap = await adminDb().collection(COLLECTIONS[file]).get();
     return snap.docs.map((d) => d.data() as T);
   }
@@ -59,7 +75,7 @@ export async function storePut<T extends Entity>(
   file: StoreFile,
   doc: T,
 ): Promise<void> {
-  if (firestore()) {
+  if (await firestore()) {
     await adminDb().collection(COLLECTIONS[file]).doc(doc.id).set(doc);
     return;
   }
@@ -71,7 +87,7 @@ export async function storePut<T extends Entity>(
 }
 
 export async function storeDelete(file: StoreFile, id: string): Promise<void> {
-  if (firestore()) {
+  if (await firestore()) {
     await adminDb().collection(COLLECTIONS[file]).doc(id).delete();
     return;
   }
@@ -84,7 +100,7 @@ export async function storeDelete(file: StoreFile, id: string): Promise<void> {
 
 /** App-wide settings document (single doc, not a collection of entities). */
 export async function getSettingsDoc<T>(fallback: T): Promise<T> {
-  if (firestore()) {
+  if (await firestore()) {
     const snap = await adminDb().doc(SETTINGS_DOC).get();
     return (snap.exists ? (snap.data() as T) : fallback) ?? fallback;
   }
@@ -92,7 +108,7 @@ export async function getSettingsDoc<T>(fallback: T): Promise<T> {
 }
 
 export async function putSettingsDoc<T>(value: T): Promise<void> {
-  if (firestore()) {
+  if (await firestore()) {
     await adminDb().doc(SETTINGS_DOC).set(value as Record<string, unknown>);
     return;
   }
