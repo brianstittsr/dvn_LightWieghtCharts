@@ -1,21 +1,9 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { getClientAuth } from "@/lib/firebase";
+import { authFetch } from "@/lib/auth-fetch";
 import type { BotEvent, FuturesBot } from "@/lib/futures-bots";
 import { cn } from "@/lib/utils";
-
-async function authFetch(path: string, init?: RequestInit): Promise<Response> {
-  const auth = getClientAuth();
-  const token = await auth?.currentUser?.getIdToken();
-  return fetch(path, {
-    ...init,
-    headers: {
-      ...(init?.headers ?? {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-  });
-}
 
 interface Platform {
   id: string;

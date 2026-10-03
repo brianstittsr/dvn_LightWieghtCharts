@@ -118,6 +118,8 @@ export interface ProjectXContract {
   symbolId: string;
   tickSize: number;
   tickValue: number;
+  /** Present on search results — marks the front month. */
+  activeContract?: boolean;
 }
 
 export interface ProjectXOrder {
@@ -168,6 +170,39 @@ export async function projectxContracts(
   );
   if (!r.success) throw new Error(r.errorMessage ?? "Contract search failed");
   return r.contracts ?? [];
+}
+
+/**
+ * Resolve a futures root ("NQ", "MNQ", "ES", …) to its front-month ProjectX
+ * contractId. Matches contract names that START with the root (so "NQ" does
+ * not match "MNQH26") and prefers the API's activeContract flag. Results are
+ * cached per creds+root for the process lifetime.
+ */
+const frontContractCache = new Map<string, ProjectXContract>();
+
+export async function resolveFrontContract(
+  creds: ProjectXCreds,
+  root: string,
+): Promise<ProjectXContract> {
+  const key = `${creds.baseUrl}:${creds.userName}:${root}`;
+  const hit = frontContractCache.get(key);
+  if (hit) return hit;
+
+  const up = root.toUpperCase();
+  const all = await projectxContracts(creds, up);
+  const matches = all.filter(
+    (c) =>
+      c.name.toUpperCase().startsWith(up) ||
+      c.symbolId.toUpperCase().endsWith(`.${up}`),
+  );
+  const pool = matches.length > 0 ? matches : all;
+  const front =
+    pool.find((c) => c.activeContract === true) ??
+    pool.find((c) => c.name.toUpperCase().startsWith(up)) ??
+    pool[0];
+  if (!front) throw new Error(`No contract found for ${root}`);
+  frontContractCache.set(key, front);
+  return front;
 }
 
 export async function projectxOpenPositions(

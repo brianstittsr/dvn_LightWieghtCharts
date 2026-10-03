@@ -3,6 +3,7 @@ import type { SymbolOption } from "@/lib/symbols";
 import type { Timeframe } from "@/lib/timeframe";
 import { hyperliquidSource } from "@/lib/sources/hyperliquid";
 import { alpacaSource } from "@/lib/sources/alpaca";
+import { topstepSource } from "@/lib/sources/topstep";
 
 /**
  * Pluggable market-data source.
@@ -25,6 +26,7 @@ export interface DataSource {
 export const DATA_SOURCES: Record<string, DataSource> = {
   hyperliquid: hyperliquidSource,
   alpaca: alpacaSource,
+  futures: topstepSource,
 };
 
 export function getDataSource(id: string): DataSource {

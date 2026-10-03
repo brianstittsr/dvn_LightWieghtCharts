@@ -15,7 +15,7 @@ import {
   type WhitespaceData,
 } from "lightweight-charts";
 import { getDataSource } from "@/lib/data-sources";
-import { CRYPTO_SYMBOLS, STOCK_SYMBOLS, symbolInfo } from "@/lib/symbols";
+import { CRYPTO_SYMBOLS, FUTURE_SYMBOLS, STOCK_SYMBOLS, symbolInfo } from "@/lib/symbols";
 import { TIMEFRAMES, type Timeframe } from "@/lib/timeframe";
 import type { Candle } from "@/lib/types";
 import { getIndicatorDef, loadCustomIndicators, saveCustomIndicator } from "@/lib/indicators/custom";
@@ -517,6 +517,13 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
           </optgroup>
           <optgroup label="US stocks — Alpaca">
             {STOCK_SYMBOLS.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
+          </optgroup>
+          <optgroup label="Futures — TopStepX">
+            {FUTURE_SYMBOLS.map((s) => (
               <option key={s.value} value={s.value}>
                 {s.label}
               </option>
