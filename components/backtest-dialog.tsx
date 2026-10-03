@@ -15,6 +15,12 @@ import {
   subscribeCustomStrategies,
   type CustomStrategySpec,
 } from "@/lib/custom-strategies";
+import {
+  JEV_DEFAULTS,
+  runJevSim,
+  type JevConfig,
+  type JevRun,
+} from "@/lib/jev/engine";
 import type { Candle } from "@/lib/types";
 
 const inputCls =
@@ -29,6 +35,7 @@ export function BacktestDialog({
   timeframe,
   getCandles,
   onResult,
+  onJevResult,
   onClose,
 }: {
   open: boolean;
@@ -36,9 +43,16 @@ export function BacktestDialog({
   timeframe: string;
   getCandles: () => Candle[];
   onResult: (r: BacktestResult) => void;
+  onJevResult: (r: JevRun) => void;
   onClose: () => void;
 }) {
+  const [mode, setMode] = useState<"strategy" | "jev">("strategy");
   const [strategy, setStrategy] = useState<string>("sma-cross");
+  const [jevModel, setJevModel] = useState<string>("momentum");
+  const [jevSize, setJevSize] = useState("5");
+  const [jevCap, setJevCap] = useState("25");
+  const [jevSpread, setJevSpread] = useState("8");
+  const [jevTicks, setJevTicks] = useState("10");
   const [capital, setCapital] = useState("10000");
   const [risk, setRisk] = useState("1");
   const [commission, setCommission] = useState("1");
@@ -139,6 +153,53 @@ export function BacktestDialog({
     }
   };
 
+  const runJev = (): void => {
+    const candles = getCandles();
+    if (candles.length < 20) {
+      setError(`Need ≥20 loaded candles (have ${candles.length}).`);
+      return;
+    }
+    const isJevCustom = jevModel.startsWith(CUSTOM_PREFIX);
+    const jevSpec = isJevCustom
+      ? customs.find((s) => `${CUSTOM_PREFIX}${s.id}` === jevModel)
+      : undefined;
+    if (isJevCustom && !jevSpec) {
+      setError("Selected AI strategy was not found — pick another.");
+      return;
+    }
+    const cfg: JevConfig = {
+      ...JEV_DEFAULTS,
+      model: isJevCustom ? `strategy:${jevSpec!.id}` : "momentum",
+      tradeSize: Math.max(0.0001, Number(jevSize) || JEV_DEFAULTS.tradeSize),
+      positionCap: Math.max(
+        Number(jevSize) || JEV_DEFAULTS.tradeSize,
+        Number(jevCap) || JEV_DEFAULTS.positionCap,
+      ),
+      spreadBps: Math.min(500, Math.max(0.5, Number(jevSpread) || JEV_DEFAULTS.spreadBps)),
+      ticksPerBar: Math.min(50, Math.max(2, Number(jevTicks) || JEV_DEFAULTS.ticksPerBar)),
+      seed: Date.now() % 2147483647,
+    };
+    try {
+      const params = jevSpec
+        ? Object.fromEntries(
+            jevSpec.params.map((p) => [p.key, paramVals[p.key] ?? Number(p.default)]),
+          )
+        : {};
+      const result = runJevSim(
+        candles,
+        symbol,
+        timeframe,
+        cfg,
+        jevSpec ? { name: jevSpec.name, code: jevSpec.code, params } : undefined,
+      );
+      setError(null);
+      onJevResult(result);
+      onClose();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Jev simulation failed");
+    }
+  };
+
   const run = (): void => {
     const candles = getCandles();
     if (candles.length < 50) {
@@ -193,6 +254,85 @@ export function BacktestDialog({
           </button>
         </div>
 
+        <div className="mb-3 flex gap-1 rounded bg-neutral-900 p-1">
+          {(
+            [
+              ["strategy", "📊 Strategy"],
+              ["jev", "⚡ Jev HFT"],
+            ] as const
+          ).map(([m, label]) => (
+            <button
+              key={m}
+              onClick={() => setMode(m)}
+              className={`flex-1 rounded px-2 py-1 text-xs font-semibold transition-colors ${
+                mode === m
+                  ? "bg-[#2962ff] text-white"
+                  : "text-neutral-400 hover:text-neutral-200"
+              }`}
+            >
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {mode === "jev" ? (
+          <div className="space-y-2.5">
+            <p className="text-[10px] leading-snug text-neutral-500">
+              Jev-style market making: every synthetic block (~a tick) the model answers
+              buy/sell and a quote posts inside the spread — fills come from price
+              crossing it. Replays live on the Jev dashboard.
+            </p>
+            <label className="block text-[11px] text-neutral-400">
+              Model
+              <select
+                value={jevModel}
+                onChange={(e) => setJevModel(e.target.value)}
+                className={`${inputCls} mt-1`}
+              >
+                <option value="momentum">jev-momentum (stand-in heuristic)</option>
+                {customs.length > 0 && (
+                  <optgroup label="AI generated">
+                    {customs.map((s) => (
+                      <option key={s.id} value={`${CUSTOM_PREFIX}${s.id}`}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
+            </label>
+            <div className="grid grid-cols-2 gap-2">
+              <label className="block text-[11px] text-neutral-400">
+                Trade size (units)
+                <input value={jevSize} onChange={(e) => setJevSize(e.target.value)} type="number" min="0.0001" className={`${inputCls} mt-1`} />
+              </label>
+              <label className="block text-[11px] text-neutral-400">
+                Position cap
+                <input value={jevCap} onChange={(e) => setJevCap(e.target.value)} type="number" min="1" className={`${inputCls} mt-1`} />
+              </label>
+              <label className="block text-[11px] text-neutral-400">
+                Spread (bps)
+                <input value={jevSpread} onChange={(e) => setJevSpread(e.target.value)} type="number" min="0.5" step="0.5" className={`${inputCls} mt-1`} />
+              </label>
+              <label className="block text-[11px] text-neutral-400">
+                Blocks per candle
+                <input value={jevTicks} onChange={(e) => setJevTicks(e.target.value)} type="number" min="2" max="50" className={`${inputCls} mt-1`} />
+              </label>
+            </div>
+            <p className="text-[10px] leading-snug text-neutral-500">
+              Ticks are synthesized inside each candle&apos;s range — a simulation aid,
+              not real order-book data. Costs model Jev economics: tiny AI spend per
+              decision, a small fee per quote.
+            </p>
+            {error && <div className="rounded bg-red-900/30 px-2 py-1.5 text-[11px] text-red-300">{error}</div>}
+            <button
+              onClick={runJev}
+              className="w-full rounded bg-[#8b5cf6] py-1.5 text-xs font-semibold text-white hover:bg-[#7c4dff]"
+            >
+              Run Jev simulation ⚡
+            </button>
+          </div>
+        ) : (
         <div className="space-y-2.5">
           <label className="block text-[11px] text-neutral-400">
             Strategy
@@ -355,6 +495,7 @@ export function BacktestDialog({
             Run backtest — {stratLabel}
           </button>
         </div>
+        )}
       </div>
     </div>
   );

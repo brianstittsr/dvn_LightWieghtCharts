@@ -29,6 +29,8 @@ import { DrawingLayer, type TpSlLevel } from "@/components/drawing-layer";
 import { TradeAlertDialog, type TradeAlert } from "@/components/trade-alert-dialog";
 import { BacktestDialog } from "@/components/backtest-dialog";
 import { BacktestResultPopup } from "@/components/backtest-result-popup";
+import { JevDashboard } from "@/components/jev-dashboard";
+import type { JevRun } from "@/lib/jev/engine";
 import type { BacktestResult } from "@/lib/backtest";
 import { useAlpacaPositions } from "@/lib/positions-store";
 import { toAlpacaSymbol } from "@/lib/alpaca-symbol";
@@ -109,6 +111,7 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
   const showFutTicket = isFutures && futDismissed !== symbol;
   const [btOpen, setBtOpen] = useState(false);
   const [btResult, setBtResult] = useState<BacktestResult | null>(null);
+  const [jevRun, setJevRun] = useState<JevRun | null>(null);
   const btMarkersRef = useRef<{
     api: { setMarkers: (m: SeriesMarker<UTCTimestamp>[]) => void };
     series: ISeriesApi<"Candlestick">;
@@ -643,9 +646,11 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
         timeframe={timeframe}
         getCandles={() => candlesRef.current}
         onResult={onBacktestResult}
+        onJevResult={setJevRun}
         onClose={() => setBtOpen(false)}
       />
       <BacktestResultPopup result={btResult} onClose={() => setBtResult(null)} />
+      {jevRun && <JevDashboard run={jevRun} onClose={() => setJevRun(null)} />}
     </div>
   );
 }
