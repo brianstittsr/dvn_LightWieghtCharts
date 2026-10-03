@@ -10,15 +10,17 @@ import {
   subscribeJournals,
 } from "@/lib/journal-store";
 import { cn, signed, usd } from "@/lib/utils";
+import { authFetch } from "@/lib/auth-fetch";
 
 const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
 
-type AssetFilter = "all" | "stock" | "option";
+type AssetFilter = "all" | "stock" | "option" | "future";
 const ASSET_FILTERS: { key: AssetFilter; label: string }[] = [
   { key: "all", label: "All" },
   { key: "stock", label: "Stocks" },
   { key: "option", label: "Options" },
+  { key: "future", label: "Futures" },
 ];
 
 function Stat({ label, children }: { label: string; children: ReactNode }) {
@@ -83,7 +85,7 @@ export function PnlCalendar({ open, onClose }: { open: boolean; onClose: () => v
   useEffect(() => {
     if (!open || days !== null) return;
     let cancelled = false;
-    fetch("/api/alpaca/pnl")
+    authFetch("/api/alpaca/pnl")
       .then(async (r) => {
         const b = (await r.json()) as { data?: { days: DayPnl[] }; error?: string };
         if (!r.ok || !b.data) throw new Error(b.error ?? "Failed to load");
@@ -133,7 +135,10 @@ export function PnlCalendar({ open, onClose }: { open: boolean; onClose: () => v
   }): Promise<void> {
     const pnlTxt = hideAmounts ? "•••" : signed(stats.monthPnl);
     const wr = stats.closedCount > 0 ? `${stats.winRate.toFixed(0)}% win rate` : "no closed trades";
-    const filterTag = assetFilter === "all" ? "" : ` (${assetFilter === "stock" ? "stocks" : "options"} only)`;
+    const filterTag =
+      assetFilter === "all"
+        ? ""
+        : ` (${assetFilter === "stock" ? "stocks" : assetFilter === "option" ? "options" : "futures"} only)`;
     const text = `${stats.label}${filterTag} — P&L ${pnlTxt} · ${stats.greenDays} green / ${stats.redDays} red days · ${wr}`;
     try {
       await navigator.clipboard.writeText(text);

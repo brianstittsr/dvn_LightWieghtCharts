@@ -2,12 +2,20 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useAlpacaPositions } from "@/lib/positions-store";
+import { authFetch } from "@/lib/auth-fetch";
 
 interface Account {
   equity?: string;
   last_equity?: string;
   cash?: string;
   buying_power?: string;
+}
+
+interface FutPnl {
+  accountName: string;
+  balance: number | null;
+  uPnl: number | null;
+  positions: { contractId: string; name: string; side: string; size: number; uPnl: number | null }[];
 }
 
 function fmt(n: number): string {
@@ -22,6 +30,7 @@ export function PositionsBar() {
   const [expanded, setExpanded] = useState(false);
   const [resetBusy, setResetBusy] = useState(false);
   const [resetMsg, setResetMsg] = useState<string | null>(null);
+  const [fut, setFut] = useState<FutPnl | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -34,6 +43,13 @@ export function PositionsBar() {
       if (accBody.data) setAccount(accBody.data);
     } catch {
       /* keep last known state on transient errors */
+    }
+    try {
+      const res = await authFetch("/api/futures/pnl");
+      const body = (await res.json()) as { data?: FutPnl };
+      setFut(res.ok && body.data ? body.data : null);
+    } catch {
+      /* futures segment simply stays hidden on failure */
     }
   }, []);
 
@@ -129,6 +145,27 @@ export function PositionsBar() {
               rP&L {realizedPl >= 0 ? "+" : ""}${fmt(realizedPl)}
             </span>
           )}
+          {fut && (
+            <>
+              <span className="border-l border-neutral-700 pl-3 font-semibold text-amber-300">
+                ⚡ Futures
+              </span>
+              <span className="font-mono text-neutral-300" title={fut.accountName}>
+                {fut.accountName.split("-")[0]} {fut.balance != null ? `$${fmt(fut.balance)}` : ""}
+              </span>
+              <span className="font-mono text-neutral-400">
+                {fut.positions.length} pos
+              </span>
+              {fut.uPnl != null && (
+                <span
+                  className={`font-mono ${fut.uPnl >= 0 ? "text-green-400" : "text-red-400"}`}
+                  title="Futures unrealized P&L (last price vs avg entry)"
+                >
+                  uP&L {fut.uPnl >= 0 ? "+" : ""}${fmt(fut.uPnl)}
+                </span>
+              )}
+            </>
+          )}
           <span className="text-neutral-500">{expanded ? "▾" : "▸"}</span>
         </button>
         <button
@@ -141,7 +178,7 @@ export function PositionsBar() {
         </button>
       </div>
       {resetMsg && <div className="mt-1 text-[10px] text-amber-300">{resetMsg}</div>}
-      {expanded && positions.length > 0 && (
+      {expanded && (positions.length > 0 || (fut && fut.positions.length > 0)) && (
         <div className="mt-1.5 grid grid-cols-2 gap-x-6 gap-y-1 border-t border-neutral-800 pt-1.5 font-mono sm:grid-cols-4 lg:grid-cols-6">
           {positions.map((p) => {
             const pl = Number(p.unrealized_pl ?? 0);
@@ -157,6 +194,18 @@ export function PositionsBar() {
               </div>
             );
           })}
+          {fut?.positions.map((p) => (
+            <div key={p.contractId} className="flex items-baseline gap-2">
+              <span className="text-amber-300">{p.name}</span>
+              <span className="text-neutral-500">
+                {p.side === "short" ? "−" : ""}
+                {p.size}
+              </span>
+              <span className={p.uPnl != null && p.uPnl < 0 ? "text-red-400" : "text-green-400"}>
+                {p.uPnl != null ? `${p.uPnl >= 0 ? "+" : ""}$${fmt(p.uPnl)}` : "—"}
+              </span>
+            </div>
+          ))}
         </div>
       )}
       {expanded && positions.length === 0 && (

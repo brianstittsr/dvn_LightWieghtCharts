@@ -35,25 +35,30 @@ async function fetchHistory(symbol: string, tf: Timeframe): Promise<Candle[]> {
 }
 
 interface QuoteResponse {
-  last: number;
+  last: number | null;
+  /** Unix seconds of the bar the price came from (staleness guard). */
+  barTime: number | null;
 }
 
 /** Last-price polls shared per symbol across panes. */
 const pricePolls = new Map<
   string,
-  { timer: ReturnType<typeof setInterval>; subs: Set<(p: number) => void> }
+  { timer: ReturnType<typeof setInterval>; subs: Set<(q: QuoteResponse) => void> }
 >();
 
-function subscribePrice(symbol: string, cb: (p: number) => void): () => void {
+function subscribePrice(
+  symbol: string,
+  cb: (q: QuoteResponse) => void,
+): () => void {
   let entry = pricePolls.get(symbol);
   if (!entry) {
-    const subs = new Set<(p: number) => void>();
+    const subs = new Set<(q: QuoteResponse) => void>();
     const timer = setInterval(async () => {
       try {
         const q = await api<QuoteResponse>(
           `/api/futures/quote?platform=topstep&symbol=${encodeURIComponent(symbol)}`,
         );
-        subs.forEach((fn) => fn(q.last));
+        if (q.last != null) subs.forEach((fn) => fn(q));
       } catch (err) {
         console.error(`Futures price poll failed for ${symbol}:`, err);
       }
@@ -73,15 +78,21 @@ function subscribePrice(symbol: string, cb: (p: number) => void): () => void {
   };
 }
 
-/** Fold each polled last-price into the current candle bucket for `tf`. */
+/**
+ * Fold each polled last-price into the candle bucket of the BAR's own
+ * timestamp — not wall-clock now — so quotes during the daily/weekend halt
+ * update the last real bar instead of drawing a fake flat line forward.
+ */
 function subscribe(
   symbol: string,
   tf: Timeframe,
   onCandle: (c: Candle) => void,
 ): () => void {
   let current: Candle | null = null;
-  return subscribePrice(symbol, (price) => {
-    const t = bucketStart(Math.floor(Date.now() / 1000), tf);
+  return subscribePrice(symbol, (q) => {
+    if (q.last == null) return;
+    const price = q.last;
+    const t = bucketStart(q.barTime ?? Math.floor(Date.now() / 1000), tf);
     if (!current || current.time !== t) {
       current = { time: t, open: price, high: price, low: price, close: price };
     } else {

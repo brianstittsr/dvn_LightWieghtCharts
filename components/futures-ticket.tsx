@@ -43,9 +43,15 @@ const TYPE_LABEL: Record<string, string> = {
 export function FuturesTicket({
   open,
   onClose,
+  variant = "modal",
+  initialSymbol,
 }: {
   open: boolean;
   onClose: () => void;
+  /** "modal" = centered overlay; "drawer" = slide-in panel anchored to the right edge of the chart pane. */
+  variant?: "modal" | "drawer";
+  /** Prefills the contract search (drawer mode remounts per symbol via key). */
+  initialSymbol?: string;
 }) {
   const [platforms, setPlatforms] = useState<FutPlatform[]>([]);
   const [platform, setPlatform] = useState("");
@@ -64,7 +70,7 @@ export function FuturesTicket({
   const [busy, setBusy] = useState("");
   const [msg, setMsg] = useState("");
   const [err, setErr] = useState("");
-  const [searchQ, setSearchQ] = useState("ES");
+  const [searchQ, setSearchQ] = useState(initialSymbol ?? "ES");
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const plat = platforms.find((p) => p.id === platform);
@@ -177,15 +183,15 @@ export function FuturesTicket({
   const action = "bg-[#3a3f4b] hover:bg-[#4a505e]";
   const danger = "bg-[#5b2d33] hover:bg-[#6e3941]";
 
-  return (
+  const body = (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
-      onClick={onClose}
+      className={
+        variant === "drawer"
+          ? "slide-in-right absolute inset-y-0 right-0 z-30 w-[300px] overflow-y-auto border-l border-[#2a2e39] bg-[#131722]/97 p-4 shadow-2xl"
+          : "w-full max-w-sm rounded-xl border border-[#2a2e39] bg-[#131722] p-4 shadow-2xl"
+      }
+      onClick={(e) => e.stopPropagation()}
     >
-      <div
-        className="w-full max-w-sm rounded-xl border border-[#2a2e39] bg-[#131722] p-4 shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
         <div className="mb-3 flex items-center justify-between">
           <h2 className="text-sm font-bold text-white">Futures Ticket</h2>
           <button onClick={onClose} className="text-gray-500 hover:text-white" aria-label="Close">
@@ -489,6 +495,16 @@ export function FuturesTicket({
           </>
         )}
       </div>
+  );
+
+  if (variant === "drawer") return body;
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onClick={onClose}
+    >
+      {body}
     </div>
   );
 }

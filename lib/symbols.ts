@@ -54,4 +54,4 @@ export function symbolInfo(value: string): SymbolOption {
 }
 
 /** Default symbol per pane index so a fresh dashboard shows a mix. */
-export const DEFAULT_PANE_SYMBOLS = ["BTC", "ETH", "SOL", "NVDA", "SPY", "HYPE", "AAPL", "DOGE"];
+export const DEFAULT_PANE_SYMBOLS = ["MES", "NQ", "ES", "NVDA", "SPY", "BTC", "ETH", "GC"];

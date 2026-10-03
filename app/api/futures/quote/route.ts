@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  projectxLastPrice,
+  projectxLastBar,
   resolveFrontContract,
   userCredsFor,
 } from "@/lib/platforms/projectx";
@@ -27,8 +27,16 @@ export async function GET(req: NextRequest) {
     if (!contractId) {
       contractId = (await resolveFrontContract(resolved.creds, symbol)).id;
     }
-    const last = await projectxLastPrice(resolved.creds, contractId);
-    return NextResponse.json({ data: { last, bid: null, ask: null, contractId } });
+    const bar = await projectxLastBar(resolved.creds, contractId);
+    return NextResponse.json({
+      data: {
+        last: bar?.c ?? null,
+        barTime: bar ? Math.floor(new Date(bar.t).getTime() / 1000) : null,
+        bid: null,
+        ask: null,
+        contractId,
+      },
+    });
   } catch (e) {
     return NextResponse.json(
       { error: e instanceof Error ? e.message : "Quote failed" },

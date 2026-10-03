@@ -24,6 +24,7 @@ import type { IndicatorBox, IndicatorDef, IndicatorInstance, ParamDef } from "@/
 import { TickerBar } from "@/components/ticker-bar";
 import { IndicatorMenu } from "@/components/indicator-menu";
 import { OrderTicket } from "@/components/order-ticket";
+import { FuturesTicket } from "@/components/futures-ticket";
 import { DrawingLayer, type TpSlLevel } from "@/components/drawing-layer";
 import { TradeAlertDialog, type TradeAlert } from "@/components/trade-alert-dialog";
 import { BacktestDialog } from "@/components/backtest-dialog";
@@ -102,6 +103,10 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
   }
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
   const [pendingTrade, setPendingTrade] = useState<TradeAlert | null>(null);
+  /** Symbol for which the user manually dismissed the futures ticket drawer. */
+  const [futDismissed, setFutDismissed] = useState<string | null>(null);
+  const isFutures = symbolInfo(symbol).source === "futures";
+  const showFutTicket = isFutures && futDismissed !== symbol;
   const [btOpen, setBtOpen] = useState(false);
   const [btResult, setBtResult] = useState<BacktestResult | null>(null);
   const btMarkersRef = useRef<{
@@ -508,6 +513,13 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
           className="rounded bg-neutral-800 px-1.5 py-1 text-xs text-neutral-200 outline-none"
           aria-label="Symbol"
         >
+          <optgroup label="Futures — TopStepX">
+            {FUTURE_SYMBOLS.map((s) => (
+              <option key={s.value} value={s.value}>
+                {s.label}
+              </option>
+            ))}
+          </optgroup>
           <optgroup label="Crypto — Hyperliquid">
             {CRYPTO_SYMBOLS.map((s) => (
               <option key={s.value} value={s.value}>
@@ -517,13 +529,6 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
           </optgroup>
           <optgroup label="US stocks — Alpaca">
             {STOCK_SYMBOLS.map((s) => (
-              <option key={s.value} value={s.value}>
-                {s.label}
-              </option>
-            ))}
-          </optgroup>
-          <optgroup label="Futures — TopStepX">
-            {FUTURE_SYMBOLS.map((s) => (
               <option key={s.value} value={s.value}>
                 {s.label}
               </option>
@@ -578,6 +583,15 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
           </span>
         )}
         <OrderTicket paneSymbol={symbol} lastPrice={price} />
+        {isFutures && !showFutTicket && (
+          <button
+            onClick={() => setFutDismissed(null)}
+            title="Open futures order ticket"
+            className="rounded bg-amber-800/70 px-1.5 py-1 text-[10px] font-semibold text-amber-100 hover:bg-amber-700/80"
+          >
+            ⚡ Ticket
+          </button>
+        )}
       </div>
       <div ref={containerRef} className="relative min-h-0 flex-1">
         <DrawingLayer
@@ -611,6 +625,15 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/60 px-4 text-center text-xs text-red-400">
             {error}
           </div>
+        )}
+        {showFutTicket && (
+          <FuturesTicket
+            key={symbol}
+            variant="drawer"
+            initialSymbol={symbol}
+            open
+            onClose={() => setFutDismissed(symbol)}
+          />
         )}
       </div>
       <TradeAlertDialog alert={pendingTrade} onClose={() => setPendingTrade(null)} />

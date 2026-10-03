@@ -302,6 +302,36 @@ export async function projectxCloseContract(
   if (!r.success) throw new Error(r.errorMessage ?? "Close failed");
 }
 
+/** Filled order history for P&L (ProjectX OrderStatus: 2 = Filled). */
+export interface ProjectXHistoryOrder {
+  id: number;
+  contractId: string;
+  side: number;
+  size: number;
+  status: number;
+  fillVolume?: number;
+  filledPrice?: number | null;
+  avgFillPrice?: number | null;
+  updateTimestamp?: string;
+  creationTimestamp?: string;
+}
+
+export async function projectxOrderHistory(
+  creds: ProjectXCreds,
+  accountId: number,
+  startIso: string,
+  endIso: string,
+): Promise<ProjectXHistoryOrder[]> {
+  const r = await pxFetch<SearchResponse<never> & { orders?: ProjectXHistoryOrder[] }>(
+    creds,
+    "/api/Order/search",
+    await projectxToken(creds),
+    { accountId, startTimestamp: startIso, endTimestamp: endIso },
+  );
+  if (!r.success) throw new Error(r.errorMessage ?? "Order history failed");
+  return r.orders ?? [];
+}
+
 /** ProjectX AggregateBarUnit enum. */
 export const PX_BAR_UNIT = { Second: 1, Minute: 2, Hour: 3, Day: 4, Week: 5, Month: 6 } as const;
 
@@ -354,6 +384,15 @@ export async function projectxLastPrice(
 ): Promise<number | null> {
   const bars = await projectxBars(creds, contractId, PX_BAR_UNIT.Minute, 1, 24 * 60 * 60 * 1000, 1);
   return bars.length ? bars[bars.length - 1].c : null;
+}
+
+/** Most recent 1m bar (price + its timestamp, for staleness checks). */
+export async function projectxLastBar(
+  creds: ProjectXCreds,
+  contractId: string,
+): Promise<ProjectXBar | null> {
+  const bars = await projectxBars(creds, contractId, PX_BAR_UNIT.Minute, 1, 24 * 60 * 60 * 1000, 1);
+  return bars.length ? bars[bars.length - 1] : null;
 }
 
 export function topstepCreds(): ProjectXCreds | null {
