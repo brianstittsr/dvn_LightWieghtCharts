@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import Link from "next/link";
 import { cn } from "@/lib/utils";
+import { PropFirmWizard } from "@/components/prop-firm-wizard";
 import {
   ACCOUNT_TIERS,
   FUTURES_CONTRACTS,
@@ -36,6 +37,7 @@ export default function PropFirmCalc(): React.ReactElement {
   const [risk, setRisk] = useState<RiskLevel>("normal");
   const [dailyGoal, setDailyGoal] = useState("250");
   const [plan, setPlan] = useState<ChallengePlan | null>(null);
+  const [wizardOpen, setWizardOpen] = useState(false);
 
   const dailyLossLimit = tier ? tier.maxDrawdown * RISK_PCT[risk] : 0;
   const planContracts = useMemo(
@@ -188,13 +190,29 @@ export default function PropFirmCalc(): React.ReactElement {
             Your target daily profit to achieve consistency
           </p>
 
-          <button
-            onClick={calculate}
-            disabled={!tier}
-            className="mt-4 rounded bg-[#2962ff] px-4 py-2 text-sm font-semibold text-white hover:bg-[#1e53e5] disabled:opacity-40"
-          >
-            📊 Calculate Plan
-          </button>
+          <div className="mt-4 flex items-center gap-2">
+            <button
+              onClick={calculate}
+              disabled={!tier}
+              className="rounded bg-[#2962ff] px-4 py-2 text-sm font-semibold text-white hover:bg-[#1e53e5] disabled:opacity-40"
+            >
+              📊 Calculate Plan
+            </button>
+            {plan && (
+              <button
+                onClick={() => setWizardOpen(true)}
+                disabled={!spec}
+                title={
+                  spec
+                    ? "Deploy this plan as a futures bot"
+                    : "Select a futures contract first"
+                }
+                className="rounded bg-[#1e7a3c] px-4 py-2 text-sm font-semibold text-white hover:bg-[#259a4b] disabled:opacity-40"
+              >
+                🤖 Implement as Bot
+              </button>
+            )}
+          </div>
         </section>
 
         {plan && (
@@ -451,6 +469,9 @@ export default function PropFirmCalc(): React.ReactElement {
           </>
         )}
       </main>
+      {wizardOpen && plan && spec && (
+        <PropFirmWizard plan={plan} spec={spec} onClose={() => setWizardOpen(false)} />
+      )}
     </div>
   );
 }
