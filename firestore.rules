@@ -79,6 +79,21 @@ service cloud.firestore {
       allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
     }
 
+    // Scanners: owner only (configs + run history).
+    match /scannerConfigs/{id} {
+      allow read, write: if signedIn() && resource.data.ownerUid == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid;
+    }
+    match /scanRuns/{id} {
+      allow read, write: if signedIn() && resource.data.ownerUid == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid;
+    }
+
+    // Per-user settings (Telegram creds): owner only.
+    match /userSettings/{uid} {
+      allow read, write: if isOwner(uid);
+    }
+
     // Shared calendars: anyone with the link reads non-revoked docs; owner manages.
     match /sharedCalendars/{id} {
       allow read: if resource.data.revoked == false;

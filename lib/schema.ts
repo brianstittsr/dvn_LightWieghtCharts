@@ -30,6 +30,9 @@ export const COLLECTIONS = {
   DRAWINGS: "drawings",
   PNL_DAYS: "pnlDays",
   SHARED_CALENDARS: "sharedCalendars",
+  SCANNER_CONFIGS: "scannerConfigs",
+  SCAN_RUNS: "scanRuns",
+  USER_SETTINGS: "userSettings",
 } as const;
 
 export type CollectionName = (typeof COLLECTIONS)[keyof typeof COLLECTIONS];
@@ -193,6 +196,49 @@ export interface PnlDayDoc {
   losses: number;
   opens: number;
   computedAt: FirestoreTimestamp;
+}
+
+// ── scannerConfigs/{configId} ────────────────────────────────────────────────
+/** Saved scanner definitions (gappers/setup) — shapes in lib/scanner/types.ts. */
+export interface ScannerConfigDoc {
+  ownerUid: string;
+  kind: "gappers" | "setup";
+  name: string;
+  filters?: { minGapPct: number; minPrice: number; minPremarketVolume: number; topN: number };
+  universe?: string[];
+  strategyId?: string;
+  strategyCode?: string;
+  strategyParams?: Record<string, number>;
+  schedule: {
+    enabled: boolean;
+    windowStartEt: number;
+    windowEndEt: number;
+    intervalMin: number;
+    weekdaysOnly: boolean;
+  };
+  createdAt: FirestoreTimestamp;
+  updatedAt: FirestoreTimestamp;
+}
+
+// ── scanRuns/{runId} ─────────────────────────────────────────────────────────
+/** Executed scan history — results payloads mirror lib/scanner/types.ts. */
+export interface ScanRunDoc {
+  ownerUid: string;
+  kind: "gappers" | "setup";
+  configId?: string;
+  gappers?: unknown[];
+  setups?: unknown[];
+  error?: string;
+  ranAt: FirestoreTimestamp;
+}
+
+// ── userSettings/{uid} ───────────────────────────────────────────────────────
+/** Per-user prefs incl. Telegram creds — server-only; never written by clients. */
+export interface UserSettingsDoc {
+  uid: string;
+  telegramBotToken?: string;
+  telegramChatId?: string;
+  updatedAt: FirestoreTimestamp;
 }
 
 // ── sharedCalendars/{shareId} ─────────────────────────────────────────────────

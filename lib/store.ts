@@ -12,10 +12,18 @@ import { readJson, writeJson } from "@/lib/server-store";
  * Firestore collection of the same domain.
  */
 
-type StoreFile = "users.json" | "futures-bots.json";
+type StoreFile =
+  | "users.json"
+  | "futures-bots.json"
+  | "scanner-configs.json"
+  | "scan-runs.json"
+  | "user-settings.json";
 const COLLECTIONS: Record<StoreFile, string> = {
   "users.json": "tradingAccounts",
   "futures-bots.json": "futuresBots",
+  "scanner-configs.json": "scannerConfigs",
+  "scan-runs.json": "scanRuns",
+  "user-settings.json": "userSettings",
 };
 
 const SETTINGS_DOC = "appSettings/app";

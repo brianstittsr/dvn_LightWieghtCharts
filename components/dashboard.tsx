@@ -2,6 +2,7 @@
 
 import { signOut } from "firebase/auth";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ChartPane } from "@/components/chart-pane";
 import { PositionsBar } from "@/components/positions-bar";
@@ -33,6 +34,8 @@ export function Dashboard() {
   const [futOpen, setFutOpen] = useState(false);
   const [botsOpen, setBotsOpen] = useState(false);
   const [userEmail, setUserEmail] = useState<string | null>(null);
+  // Deep-link from the scanners: /?symbol=AMD loads it into pane 0.
+  const urlSymbol = useSearchParams().get("symbol")?.toUpperCase() ?? null;
 
   useEffect(() => {
     const auth = getClientAuth();
@@ -104,6 +107,13 @@ export function Dashboard() {
           🧮 Prop Firm
         </Link>
         <Link
+          href="/scanner"
+          title="Stock scanners — gappers, setups, alerts"
+          className="rounded bg-neutral-800 px-2.5 py-1 text-xs font-medium text-neutral-300 hover:bg-neutral-700"
+        >
+          📡 Scanner
+        </Link>
+        <Link
           href="/admin"
           title="Admin — accounts & settings"
           className="rounded bg-neutral-800 px-2.5 py-1 text-xs font-medium text-neutral-300 hover:bg-neutral-700"
@@ -129,9 +139,13 @@ export function Dashboard() {
       <main className={cn("grid min-h-0 flex-1 gap-2", GRID[count])}>
         {Array.from({ length: count }, (_, i) => (
           <ChartPane
-            key={`pane-${i}`}
+            key={i === 0 && urlSymbol ? `pane-0-${urlSymbol}` : `pane-${i}`}
             paneId={`pane-${i}`}
-            defaultSymbol={DEFAULT_PANE_SYMBOLS[i % DEFAULT_PANE_SYMBOLS.length]}
+            defaultSymbol={
+              i === 0 && urlSymbol
+                ? urlSymbol
+                : DEFAULT_PANE_SYMBOLS[i % DEFAULT_PANE_SYMBOLS.length]
+            }
           />
         ))}
       </main>
