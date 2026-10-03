@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { alpacaConfigured, AlpacaError } from "@/lib/alpaca";
 import { runGappersScan } from "@/lib/scanner/gappers";
+import { watchlistSymbols } from "@/lib/scanner/watchlists";
 import {
   DEFAULT_GAP_FILTERS,
   type ScanRun,
@@ -12,9 +13,12 @@ import { storeList, storePut } from "@/lib/store";
 import { randomUUID } from "crypto";
 
 const filtersSchema = z.object({
+  assetClass: z.enum(["stock", "crypto", "future"]).default("stock"),
+  universe: z.array(z.string().min(1).max(15)).max(100).optional(),
+  watchlistId: z.string().optional(),
   minGapPct: z.number().min(0).max(500).optional(),
   minPrice: z.number().min(0).optional(),
-  minPremarketVolume: z.number().int().min(0).optional(),
+  minPremarketVolume: z.number().min(0).optional(),
   topN: z.number().int().min(1).max(30).optional(),
 });
 
@@ -29,15 +33,22 @@ export async function POST(req: NextRequest) {
       { status: 501 },
     );
   }
-  const body = await req.json().catch(() => ({}));
-  const parsed = filtersSchema.safeParse(body);
-  const filters = { ...DEFAULT_GAP_FILTERS, ...(parsed.success ? parsed.data : {}) };
+  const parsed = filtersSchema.safeParse(await req.json().catch(() => ({})));
+  const body = parsed.success ? parsed.data : { assetClass: "stock" as const };
+  const filters = { ...DEFAULT_GAP_FILTERS, ...body };
+  const universe =
+    body.universe ?? (await watchlistSymbols(uid, body.watchlistId));
   try {
-    const gappers = await runGappersScan(filters);
+    const gappers = await runGappersScan(filters, {
+      assetClass: body.assetClass,
+      universe,
+      uid,
+    });
     const run: ScanRun = {
       id: randomUUID(),
       kind: "gappers",
       ownerUid: uid,
+      assetClass: body.assetClass,
       ranAt: new Date().toISOString(),
       gappers,
     };

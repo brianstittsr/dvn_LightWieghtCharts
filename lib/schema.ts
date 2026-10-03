@@ -33,6 +33,8 @@ export const COLLECTIONS = {
   SCANNER_CONFIGS: "scannerConfigs",
   SCAN_RUNS: "scanRuns",
   USER_SETTINGS: "userSettings",
+  WATCHLISTS: "watchlists",
+  ALPACA_BOTS: "alpacaBots",
 } as const;
 
 export type CollectionName = (typeof COLLECTIONS)[keyof typeof COLLECTIONS];
@@ -238,6 +240,32 @@ export interface UserSettingsDoc {
   uid: string;
   telegramBotToken?: string;
   telegramChatId?: string;
+  updatedAt: FirestoreTimestamp;
+}
+
+// ── watchlists/{id} ──────────────────────────────────────────────────────────
+/** Per-user scanner universes, one list per asset class. */
+export interface WatchlistDoc {
+  uid: string;
+  name: string;
+  assetClass: "stock" | "crypto" | "future";
+  symbols: string[];
+  createdAt: FirestoreTimestamp;
+  updatedAt: FirestoreTimestamp;
+}
+
+// ── alpacaBots/{botId} ───────────────────────────────────────────────────────
+/** Alpaca-venue bots (stocks + crypto) — shape mirrors lib/alpaca-bots.ts. */
+export interface AlpacaBotDoc {
+  ownerUid: string;
+  name: string;
+  symbol: string;
+  assetClass: "stock" | "crypto";
+  timeframe: string;
+  qty: number;
+  strategy: unknown;
+  state: "stopped" | "running";
+  createdAt: FirestoreTimestamp;
   updatedAt: FirestoreTimestamp;
 }
 

@@ -94,6 +94,16 @@ service cloud.firestore {
       allow read, write: if isOwner(uid);
     }
 
+    // Watchlists + Alpaca bots: owner only (uid/ownerUid field).
+    match /watchlists/{id} {
+      allow read, write: if signedIn() && resource.data.uid == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.uid == request.auth.uid;
+    }
+    match /alpacaBots/{id} {
+      allow read, write: if signedIn() && resource.data.ownerUid == request.auth.uid;
+      allow create: if signedIn() && request.resource.data.ownerUid == request.auth.uid;
+    }
+
     // Shared calendars: anyone with the link reads non-revoked docs; owner manages.
     match /sharedCalendars/{id} {
       allow read: if resource.data.revoked == false;

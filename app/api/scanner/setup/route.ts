@@ -3,13 +3,16 @@ import { z } from "zod";
 import { alpacaConfigured, AlpacaError } from "@/lib/alpaca";
 import { ensureScannerScheduler } from "@/lib/scanner/scheduler";
 import { runSetupScan } from "@/lib/scanner/setup";
+import { watchlistSymbols } from "@/lib/scanner/watchlists";
 import type { ScanRun } from "@/lib/scanner/types";
 import { verifyUser } from "@/lib/server-auth";
 import { storeList, storePut } from "@/lib/store";
 import { randomUUID } from "crypto";
 
 const runSchema = z.object({
-  universe: z.array(z.string().min(1).max(12)).min(1).max(50),
+  assetClass: z.enum(["stock", "crypto", "future"]).default("stock"),
+  universe: z.array(z.string().min(1).max(15)).min(1).max(50).optional(),
+  watchlistId: z.string().optional(),
   strategyId: z.string().default("trend-join-long"),
   strategyCode: z.string().optional(),
   strategyParams: z.record(z.string(), z.number()).optional(),
@@ -33,18 +36,26 @@ export async function POST(req: NextRequest) {
       { status: 400 },
     );
   }
-  const { universe, strategyId, strategyCode, strategyParams } = parsed.data;
-  const symbols = [...new Set(universe.map((s) => s.toUpperCase().trim()))];
+  const { assetClass, universe, watchlistId, strategyId, strategyCode, strategyParams } =
+    parsed.data;
+  const wlSymbols = await watchlistSymbols(uid, watchlistId);
+  const symbols = [
+    ...new Set([...(universe ?? []), ...(wlSymbols ?? [])].map((s) => s.toUpperCase().trim())),
+  ];
+  if (symbols.length === 0) {
+    return NextResponse.json({ error: "universe required" }, { status: 400 });
+  }
   try {
     const setups = await runSetupScan(symbols, {
       id: strategyId,
       code: strategyCode,
       params: strategyParams,
-    });
+    }, { assetClass, uid });
     const run: ScanRun = {
       id: randomUUID(),
       kind: "setup",
       ownerUid: uid,
+      assetClass,
       ranAt: new Date().toISOString(),
       setups,
     };

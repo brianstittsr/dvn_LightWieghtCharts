@@ -9,8 +9,9 @@
  */
 import { alpacaData } from "@/lib/alpaca";
 import { desiredFromCode } from "@/lib/backtest";
+import { barsFor } from "@/lib/scanner/data";
 import { etDateKey, etNow, etToUtc } from "@/lib/scanner/types";
-import type { SetupResult } from "@/lib/scanner/types";
+import type { AssetClass, SetupResult } from "@/lib/scanner/types";
 import type { Candle } from "@/lib/types";
 
 export interface SetupStrategy {
@@ -101,23 +102,27 @@ async function evalTjl(symbol: string, currPx: number): Promise<SetupResult> {
   };
 }
 
-/** Custom strategy: run desiredFromCode on today's 1m candles. */
+/** Custom strategy: run desiredFromCode on recent candles of the asset. */
 async function evalCustom(
+  assetClass: AssetClass,
   symbol: string,
   code: string,
   params: Record<string, number>,
+  uid: string | null,
 ): Promise<SetupResult> {
-  const minute = await todayMinuteBars(symbol);
-  const candles: Candle[] = minute.map((b) => ({
-    time: Math.floor(new Date(b.t).getTime() / 1000),
-    open: b.o,
-    high: b.h,
-    low: b.l,
-    close: b.c,
-    volume: b.v,
-  }));
+  const candles: Candle[] =
+    assetClass === "stock"
+      ? (await todayMinuteBars(symbol)).map((b) => ({
+          time: Math.floor(new Date(b.t).getTime() / 1000),
+          open: b.o,
+          high: b.h,
+          low: b.l,
+          close: b.c,
+          volume: b.v,
+        }))
+      : await barsFor(assetClass, symbol, "5m", 300, uid);
   if (candles.length === 0) {
-    return { symbol, result: "error", reason: "no intraday bars" };
+    return { symbol, result: "error", reason: "no bars for this symbol" };
   }
   const desired = desiredFromCode(code, candles, params);
   const last = desired.at(-1) ?? "flat";
@@ -125,6 +130,7 @@ async function evalCustom(
     symbol,
     result: last === "flat" ? "fail_intraday" : "PASS",
     reason: last === "flat" ? undefined : `signal: ${last}`,
+    currPrice: candles.at(-1)?.close,
   };
 }
 
@@ -135,8 +141,11 @@ async function evalCustom(
 export async function runSetupScan(
   universe: string[],
   strategy: SetupStrategy,
+  opts: { assetClass?: AssetClass; uid?: string | null } = {},
 ): Promise<SetupResult[]> {
-  const prices = await latestPrices(universe);
+  const assetClass = opts.assetClass ?? "stock";
+  const uid = opts.uid ?? null;
+  const prices = assetClass === "stock" ? await latestPrices(universe) : {};
   const results: SetupResult[] = [];
   const BATCH = 4;
   for (let i = 0; i < universe.length; i += BATCH) {
@@ -144,6 +153,9 @@ export async function runSetupScan(
       universe.slice(i, i + BATCH).map(async (symbol): Promise<SetupResult> => {
         try {
           if (strategy.id === "trend-join-long") {
+            if (assetClass !== "stock") {
+              return { symbol, result: "error", reason: "TJL is stocks-only" };
+            }
             const px =
               prices[symbol] ??
               (await dailyBars(symbol).then((b) => b.at(-1)?.c ?? 0));
@@ -153,7 +165,13 @@ export async function runSetupScan(
           if (!strategy.code) {
             return { symbol, result: "error", reason: "strategy has no code" };
           }
-          return await evalCustom(symbol, strategy.code, strategy.params ?? {});
+          return await evalCustom(
+            assetClass,
+            symbol,
+            strategy.code,
+            strategy.params ?? {},
+            uid,
+          );
         } catch (err) {
           return {
             symbol,

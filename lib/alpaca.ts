@@ -1,6 +1,14 @@
-/** Server-side Alpaca paper-trading client. Keys come from .env.local. */
+/**
+ * Server-side Alpaca paper-trading client. Keys come from .env.local by
+ * default; call sites can pass per-user keys resolved via userAlpacaCreds.
+ */
 
 const BASE_URL = process.env.ALPACA_BASE_URL ?? "https://paper-api.alpaca.markets";
+
+export interface AlpacaKeys {
+  key: string;
+  secret: string;
+}
 
 function alpacaKeys(): { key?: string; secret?: string } {
   return {
@@ -9,13 +17,45 @@ function alpacaKeys(): { key?: string; secret?: string } {
   };
 }
 
+/**
+ * Resolve Alpaca creds for a request: the caller's own admin-managed
+ * trading account (platform "alpaca", apiKey = Key ID, apiSecret = Secret)
+ * first, then env-var keys as the shared fallback.
+ */
+export async function userAlpacaCreds(
+  uid: string | null,
+): Promise<AlpacaKeys | null> {
+  if (uid) {
+    const { storeList } = await import("@/lib/store");
+    const accounts = await storeList<{
+      platform: string;
+      ownerUid?: string;
+      apiKey?: string;
+      apiSecret?: string;
+    }>("users.json");
+    const mine = accounts.find(
+      (a) =>
+        a.platform === "alpaca" && a.ownerUid === uid && a.apiKey && a.apiSecret,
+    );
+    if (mine?.apiKey && mine.apiSecret) {
+      return { key: mine.apiKey, secret: mine.apiSecret };
+    }
+  }
+  const { key, secret } = alpacaKeys();
+  return key && secret ? { key, secret } : null;
+}
+
 export function alpacaConfigured(): boolean {
   const { key, secret } = alpacaKeys();
   return Boolean(key && secret);
 }
 
-export async function alpaca<T>(path: string, init?: RequestInit): Promise<T> {
-  const { key, secret } = alpacaKeys();
+export async function alpaca<T>(
+  path: string,
+  init?: RequestInit,
+  keys?: AlpacaKeys,
+): Promise<T> {
+  const { key, secret } = keys ?? alpacaKeys();
   if (!key || !secret) {
     throw new AlpacaError(
       "Alpaca API keys are not configured (set APCA_API_KEY_ID/APCA_API_SECRET_KEY or ALPACA_API_KEY/ALPACA_API_SECRET in .env.local)",
@@ -53,8 +93,12 @@ export function alpacaDataFeed(): string {
   return process.env.ALPACA_DATA_FEED ?? "iex";
 }
 
-export async function alpacaData<T>(path: string, feed?: string): Promise<T> {
-  const { key, secret } = alpacaKeys();
+export async function alpacaData<T>(
+  path: string,
+  feed?: string,
+  keys?: AlpacaKeys,
+): Promise<T> {
+  const { key, secret } = keys ?? alpacaKeys();
   if (!key || !secret) {
     throw new AlpacaError("Alpaca API keys are not configured", 501);
   }
@@ -80,8 +124,11 @@ export async function alpacaData<T>(path: string, feed?: string): Promise<T> {
  * Alpaca market-data API call without the `feed` param — for /v1beta1/*
  * endpoints (screener, news) that don't accept it.
  */
-export async function alpacaDataRaw<T>(path: string): Promise<T> {
-  const { key, secret } = alpacaKeys();
+export async function alpacaDataRaw<T>(
+  path: string,
+  keys?: AlpacaKeys,
+): Promise<T> {
+  const { key, secret } = keys ?? alpacaKeys();
   if (!key || !secret) {
     throw new AlpacaError("Alpaca API keys are not configured", 501);
   }

@@ -5,6 +5,20 @@
 
 export type ScannerKind = "gappers" | "setup";
 
+/** Asset classes supported by the scanners and watchlists. */
+export type AssetClass = "stock" | "crypto" | "future";
+
+/** Per-user saved symbol universe for scanning. */
+export interface Watchlist {
+  id: string;
+  uid: string;
+  name: string;
+  assetClass: AssetClass;
+  symbols: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 // ── Results ─────────────────────────────────────────────────────────────────
 
 export interface GapperResult {
@@ -34,6 +48,7 @@ export interface ScanRun {
   id: string;
   kind: ScannerKind;
   ownerUid: string;
+  assetClass: AssetClass;
   configId?: string;
   ranAt: string;
   gappers?: GapperResult[];
@@ -78,6 +93,7 @@ export interface ScannerConfig {
   ownerUid: string;
   kind: ScannerKind;
   name: string;
+  assetClass: AssetClass;
   filters?: GapperFilters;
   /** Setup scanner universe (uppercase symbols). */
   universe?: string[];
@@ -102,7 +118,30 @@ export interface UserSettings {
   uid: string;
   telegramBotToken?: string;
   telegramChatId?: string;
+  /** First-login onboarding answers + guide progress. */
+  profile?: UserProfile;
   updatedAt: string;
+}
+
+export type InterestKey =
+  | "backtesting"
+  | "bots"
+  | "live-trading"
+  | "technical-analysis"
+  | "premarket"
+  | "prop-firm";
+
+export interface UserProfile {
+  onboarded: boolean;
+  tradingStyles: string[];
+  experience: "beginner" | "intermediate" | "advanced";
+  /** e.g. "alpaca", "topstep", "schwab", "ninjatrader", "ibkr", "none". */
+  brokers: string[];
+  interests: InterestKey[];
+  /** Checked-off guide step ids. */
+  guideProgress: Record<string, boolean>;
+  guideDismissed?: boolean;
+  completedAt?: string;
 }
 
 // ── ET clock helpers (scheduler + PMH/HOD math share these) ─────────────────

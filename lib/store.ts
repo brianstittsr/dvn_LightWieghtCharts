@@ -15,15 +15,19 @@ import { readJson, writeJson } from "@/lib/server-store";
 type StoreFile =
   | "users.json"
   | "futures-bots.json"
+  | "bots.json"
   | "scanner-configs.json"
   | "scan-runs.json"
-  | "user-settings.json";
+  | "user-settings.json"
+  | "watchlists.json";
 const COLLECTIONS: Record<StoreFile, string> = {
   "users.json": "tradingAccounts",
   "futures-bots.json": "futuresBots",
+  "bots.json": "alpacaBots",
   "scanner-configs.json": "scannerConfigs",
   "scan-runs.json": "scanRuns",
   "user-settings.json": "userSettings",
+  "watchlists.json": "watchlists",
 };
 
 const SETTINGS_DOC = "appSettings/app";

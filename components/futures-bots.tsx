@@ -25,9 +25,12 @@ const btn = "rounded px-3 py-1.5 text-xs font-semibold text-white disabled:opaci
 export function FuturesBots({
   open,
   onClose,
+  embedded = false,
 }: {
   open: boolean;
   onClose: () => void;
+  /** Render inside a parent dialog (no overlay/close chrome). */
+  embedded?: boolean;
 }) {
   const [bots, setBots] = useState<(FuturesBot & { running?: boolean })[]>([]);
   const [selected, setSelected] = useState<string | "new" | null>(null);
@@ -55,12 +58,8 @@ export function FuturesBots({
   if (!open) return null;
   const bot = bots.find((b) => b.id === selected) ?? null;
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-      <div
-        className="flex max-h-[90vh] w-full max-w-4xl overflow-hidden rounded-xl border border-[#2a2e39] bg-[#131722] shadow-2xl"
-        onClick={(e) => e.stopPropagation()}
-      >
+  const content = (
+    <div className="flex max-h-[82vh] w-full overflow-hidden">
         {/* Sidebar */}
         <aside className="flex w-56 flex-col border-r border-[#2a2e39]">
           <div className="flex items-center justify-between border-b border-[#2a2e39] px-3 py-3">
@@ -118,6 +117,22 @@ export function FuturesBots({
           )}
           {err && <p className="mt-3 text-xs text-red-400">{err}</p>}
         </main>
+      </div>
+  );
+
+  if (embedded) {
+    return <div className="h-full overflow-y-auto">{content}</div>;
+  }
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+      onClick={onClose}
+    >
+      <div
+        className="flex max-h-[90vh] w-full max-w-4xl overflow-hidden rounded-xl border border-[#2a2e39] bg-[#131722] shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      >
+        {content}
       </div>
     </div>
   );

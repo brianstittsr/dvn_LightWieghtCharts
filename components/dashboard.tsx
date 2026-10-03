@@ -9,11 +9,16 @@ import { PositionsBar } from "@/components/positions-bar";
 import { MarketStatus } from "@/components/market-status";
 import { PnlCalendar } from "@/components/pnl-calendar";
 import { EconomicCalendar } from "@/components/economic-calendar";
-import { FuturesBots } from "@/components/futures-bots";
+import { BotsDialog } from "@/components/bots-dialog";
 import { FuturesTicket } from "@/components/futures-ticket";
+import { GuidePanel } from "@/components/guide-panel";
+import { OnboardingWizard } from "@/components/onboarding-wizard";
 import { PlatformsDialog } from "@/components/platforms-dialog";
 import { CHART_COUNTS, useChartCount } from "@/hooks/use-chart-count";
+import { authFetch } from "@/lib/auth-fetch";
+import { featuresFor } from "@/lib/features";
 import { firebaseConfigured, getClientAuth } from "@/lib/firebase";
+import type { UserProfile } from "@/lib/scanner/types";
 import { DEFAULT_PANE_SYMBOLS } from "@/lib/symbols";
 import { cn } from "@/lib/utils";
 
@@ -34,6 +39,9 @@ export function Dashboard() {
   const [futOpen, setFutOpen] = useState(false);
   const [botsOpen, setBotsOpen] = useState(false);
   const [userEmail, setUserEmail] = useState<string | null>(null);
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [profileLoaded, setProfileLoaded] = useState(false);
+  const [wizOpen, setWizOpen] = useState(false);
   // Deep-link from the scanners: /?symbol=AMD loads it into pane 0.
   const urlSymbol = useSearchParams().get("symbol")?.toUpperCase() ?? null;
 
@@ -42,6 +50,22 @@ export function Dashboard() {
     if (!auth) return;
     return auth.onAuthStateChanged((u) => setUserEmail(u?.email ?? null));
   }, []);
+
+  useEffect(() => {
+    if (!firebaseConfigured) return;
+    void authFetch("/api/user-settings")
+      .then(async (r) => ({ ok: r.ok, d: await r.json().catch(() => ({})) }))
+      .then(({ ok, d }) => {
+        if (!ok) return;
+        const p = (d.data?.profile ?? null) as UserProfile | null;
+        setProfile(p);
+        if (!p?.onboarded) setWizOpen(true);
+      })
+      .catch(() => {})
+      .finally(() => setProfileLoaded(true));
+  }, []);
+
+  const features = featuresFor(profile ?? undefined);
 
   return (
     <div className="flex h-screen flex-col gap-2 bg-neutral-950 p-2">
@@ -64,13 +88,15 @@ export function Dashboard() {
             </button>
           ))}
         </div>
-        <button
-          onClick={() => setCalOpen(true)}
-          title="P&L calendar"
-          className="rounded bg-neutral-800 px-2.5 py-1 text-xs font-medium text-neutral-300 hover:bg-neutral-700"
-        >
-          📅 P&L
-        </button>
+        {features.has("pnl") && (
+          <button
+            onClick={() => setCalOpen(true)}
+            title="P&L calendar"
+            className="rounded bg-neutral-800 px-2.5 py-1 text-xs font-medium text-neutral-300 hover:bg-neutral-700"
+          >
+            📅 P&L
+          </button>
+        )}
         <button
           onClick={() => setEconOpen(true)}
           title="Economic calendar"
@@ -85,34 +111,49 @@ export function Dashboard() {
         >
           🔌 Platforms
         </button>
+        {features.has("futures") && (
+          <button
+            onClick={() => setFutOpen(true)}
+            title="Futures order ticket (TopStep / Apex)"
+            className="rounded bg-neutral-800 px-2.5 py-1 text-xs font-medium text-neutral-300 hover:bg-neutral-700"
+          >
+            ⚡ Futures
+          </button>
+        )}
+        {features.has("bots") && (
+          <button
+            onClick={() => setBotsOpen(true)}
+            title="Trading bots (futures + stocks/crypto)"
+            className="rounded bg-neutral-800 px-2.5 py-1 text-xs font-medium text-neutral-300 hover:bg-neutral-700"
+          >
+            🤖 Bots
+          </button>
+        )}
+        {features.has("propFirm") && (
+          <Link
+            href="/prop-firm"
+            title="Prop firm challenge calculator"
+            className="rounded bg-neutral-800 px-2.5 py-1 text-xs font-medium text-neutral-300 hover:bg-neutral-700"
+          >
+            🧮 Prop Firm
+          </Link>
+        )}
+        {features.has("scanner") && (
+          <Link
+            href="/scanner"
+            title="Scanners — gappers, setups, alerts"
+            className="rounded bg-neutral-800 px-2.5 py-1 text-xs font-medium text-neutral-300 hover:bg-neutral-700"
+          >
+            📡 Scanner
+          </Link>
+        )}
         <button
-          onClick={() => setFutOpen(true)}
-          title="Futures order ticket (TopStep / Apex)"
+          onClick={() => setWizOpen(true)}
+          title="Preferences — re-run the setup wizard"
           className="rounded bg-neutral-800 px-2.5 py-1 text-xs font-medium text-neutral-300 hover:bg-neutral-700"
         >
-          ⚡ Futures
+          🧭 Setup
         </button>
-        <button
-          onClick={() => setBotsOpen(true)}
-          title="Futures trading bots"
-          className="rounded bg-neutral-800 px-2.5 py-1 text-xs font-medium text-neutral-300 hover:bg-neutral-700"
-        >
-          🤖 Bots
-        </button>
-        <Link
-          href="/prop-firm"
-          title="Prop firm challenge calculator"
-          className="rounded bg-neutral-800 px-2.5 py-1 text-xs font-medium text-neutral-300 hover:bg-neutral-700"
-        >
-          🧮 Prop Firm
-        </Link>
-        <Link
-          href="/scanner"
-          title="Stock scanners — gappers, setups, alerts"
-          className="rounded bg-neutral-800 px-2.5 py-1 text-xs font-medium text-neutral-300 hover:bg-neutral-700"
-        >
-          📡 Scanner
-        </Link>
         <Link
           href="/admin"
           title="Admin — accounts & settings"
@@ -154,7 +195,21 @@ export function Dashboard() {
       <EconomicCalendar open={econOpen} onClose={() => setEconOpen(false)} />
       <PlatformsDialog open={platOpen} onClose={() => setPlatOpen(false)} />
       <FuturesTicket open={futOpen} onClose={() => setFutOpen(false)} />
-      <FuturesBots open={botsOpen} onClose={() => setBotsOpen(false)} />
+      <BotsDialog open={botsOpen} onClose={() => setBotsOpen(false)} />
+      {profile?.onboarded && (
+        <div className="fixed bottom-14 right-3 z-40 w-72">
+          <GuidePanel profile={profile} onChange={setProfile} />
+        </div>
+      )}
+      {profileLoaded && wizOpen && firebaseConfigured && (
+        <OnboardingWizard
+          userEmail={userEmail}
+          onDone={(p) => {
+            setProfile(p);
+            setWizOpen(false);
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -54,6 +54,7 @@ export async function runScannerConfig(
     id: randomUUID(),
     kind: cfg.kind,
     ownerUid: cfg.ownerUid,
+    assetClass: cfg.assetClass ?? "stock",
     configId: cfg.id,
     ranAt: new Date().toISOString(),
   };
@@ -66,13 +67,18 @@ export async function runScannerConfig(
           minPremarketVolume: 50_000,
           topN: 10,
         },
+        { assetClass: cfg.assetClass ?? "stock", universe: cfg.universe, uid: cfg.ownerUid },
       );
     } else {
-      run.setups = await runSetupScan(cfg.universe ?? [], {
-        id: cfg.strategyId ?? "trend-join-long",
-        code: cfg.strategyCode,
-        params: cfg.strategyParams,
-      });
+      run.setups = await runSetupScan(
+        cfg.universe ?? [],
+        {
+          id: cfg.strategyId ?? "trend-join-long",
+          code: cfg.strategyCode,
+          params: cfg.strategyParams,
+        },
+        { assetClass: cfg.assetClass ?? "stock", uid: cfg.ownerUid },
+      );
     }
   } catch (err) {
     run.error = err instanceof Error ? err.message : "scan failed";

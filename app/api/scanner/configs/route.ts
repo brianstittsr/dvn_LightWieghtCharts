@@ -17,6 +17,7 @@ const scheduleSchema = z.object({
 const configSchema = z.object({
   kind: z.enum(["gappers", "setup"]),
   name: z.string().min(1).max(80),
+  assetClass: z.enum(["stock", "crypto", "future"]).default("stock"),
   filters: z
     .object({
       minGapPct: z.number().min(0).max(500),
@@ -61,6 +62,7 @@ export async function POST(req: NextRequest) {
     ownerUid: uid,
     kind: d.kind,
     name: d.name,
+    assetClass: d.assetClass,
     filters: d.filters,
     universe: d.universe?.map((s) => s.toUpperCase()),
     strategyId: d.strategyId,

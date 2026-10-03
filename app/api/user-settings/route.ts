@@ -4,9 +4,33 @@ import type { UserSettings } from "@/lib/scanner/types";
 import { verifyUser } from "@/lib/server-auth";
 import { storeList, storePut } from "@/lib/store";
 
+const profileSchema = z.object({
+  onboarded: z.boolean(),
+  tradingStyles: z.array(z.string().max(40)).max(10).default([]),
+  experience: z.enum(["beginner", "intermediate", "advanced"]).default("beginner"),
+  brokers: z.array(z.string().max(40)).max(20).default([]),
+  interests: z
+    .array(
+      z.enum([
+        "backtesting",
+        "bots",
+        "live-trading",
+        "technical-analysis",
+        "premarket",
+        "prop-firm",
+      ]),
+    )
+    .max(10)
+    .default([]),
+  guideProgress: z.record(z.string(), z.boolean()).default({}),
+  guideDismissed: z.boolean().optional(),
+  completedAt: z.string().optional(),
+});
+
 const putSchema = z.object({
   telegramBotToken: z.string().max(200).optional(),
   telegramChatId: z.string().max(50).optional(),
+  profile: profileSchema.optional(),
 });
 
 const mask = (v?: string): string | undefined =>
@@ -27,6 +51,7 @@ export async function GET(req: NextRequest) {
       envFallback: Boolean(
         process.env.TELEGRAM_BOT_TOKEN && process.env.TELEGRAM_CHAT_ID,
       ),
+      profile: doc?.profile ?? null,
     },
   });
 }
@@ -57,6 +82,7 @@ export async function PUT(req: NextRequest) {
       d.telegramChatId !== undefined
         ? d.telegramChatId || undefined
         : existing?.telegramChatId,
+    profile: d.profile !== undefined ? d.profile : existing?.profile,
     updatedAt: new Date().toISOString(),
   };
   await storePut("user-settings.json", doc);
@@ -65,6 +91,7 @@ export async function PUT(req: NextRequest) {
       telegramBotTokenMasked: mask(doc.telegramBotToken),
       telegramChatId: doc.telegramChatId,
       hasTelegram: Boolean(doc.telegramBotToken && doc.telegramChatId),
+      profile: doc.profile ?? null,
     },
   });
 }

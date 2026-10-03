@@ -3,13 +3,16 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { authFetch } from "@/lib/auth-fetch";
+import { DeployBotDialog } from "@/components/deploy-bot-dialog";
 import { getCustomStrategies } from "@/lib/custom-strategies";
 import {
   DEFAULT_GAP_FILTERS,
+  type AssetClass,
   type GapperResult,
   type ScanRun,
   type ScannerConfig,
   type SetupResult,
+  type Watchlist,
 } from "@/lib/scanner/types";
 import { cn } from "@/lib/utils";
 
@@ -105,12 +108,118 @@ export function ScannerPage() {
 
 /* ─── Tab 1: Premarket gappers ──────────────────────────────────────────── */
 
+const ASSET_LABELS: Record<AssetClass, string> = {
+  stock: "📈 Stocks",
+  crypto: "₿ Crypto",
+  future: "⚡ Futures",
+};
+
+const VOL_LABEL: Record<AssetClass, string> = {
+  stock: "Min PM volume",
+  crypto: "Min 24h vol $",
+  future: "Min overnight vol",
+};
+
+function AssetChips({
+  value,
+  onChange,
+}: {
+  value: AssetClass;
+  onChange: (a: AssetClass) => void;
+}) {
+  return (
+    <div className="flex gap-1">
+      {(Object.keys(ASSET_LABELS) as AssetClass[]).map((a) => (
+        <button
+          key={a}
+          onClick={() => onChange(a)}
+          className={cn(
+            "rounded px-2.5 py-1 text-[11px] font-semibold transition-colors",
+            value === a
+              ? "bg-[#2962ff] text-white"
+              : "bg-neutral-800 text-gray-400 hover:bg-neutral-700",
+          )}
+        >
+          {ASSET_LABELS[a]}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+/** Watchlist picker + "save current universe" — shared by both scan tabs. */
+function WatchlistPicker({
+  assetClass,
+  onPick,
+  universe,
+}: {
+  assetClass: AssetClass;
+  onPick: (symbols: string[], id: string | undefined) => void;
+  universe: string;
+}) {
+  const [lists, setLists] = useState<Watchlist[]>([]);
+  const [picked, setPicked] = useState("");
+
+  useEffect(() => {
+    authFetch("/api/watchlists")
+      .then((r) => r.json())
+      .then((d) => setLists(d.data?.watchlists ?? []))
+      .catch(() => {});
+  }, []);
+
+  const mine = lists.filter((w) => w.assetClass === assetClass);
+
+  const save = async () => {
+    const name = window.prompt("Watchlist name:", `My ${assetClass} list`);
+    const symbols = universe.split(/[\s,]+/).filter(Boolean);
+    if (!name || symbols.length === 0) return;
+    const res = await authFetch("/api/watchlists", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, assetClass, symbols }),
+    });
+    if (res.ok) {
+      const d = await res.json();
+      setLists((l) => [...l, d.data.watchlist]);
+    }
+  };
+
+  return (
+    <div className="flex items-end gap-1">
+      <Field label="Watchlist">
+        <select
+          value={picked}
+          onChange={(e) => {
+            setPicked(e.target.value);
+            const wl = mine.find((w) => w.id === e.target.value);
+            onPick(wl?.symbols ?? [], e.target.value || undefined);
+          }}
+          className={cn(sel, "w-36")}
+        >
+          <option value="">— default universe —</option>
+          {mine.map((w) => (
+            <option key={w.id} value={w.id}>{w.name} ({w.symbols.length})</option>
+          ))}
+        </select>
+      </Field>
+      <button onClick={save} title="Save current universe as a watchlist"
+        className={cn(btn, "bg-neutral-700 hover:bg-neutral-600 !py-1.5")}>
+        ★ Save
+      </button>
+    </div>
+  );
+}
+
 function GappersTab({ onError }: { onError: (e: string) => void }) {
+  const [assetClass, setAssetClass] = useState<AssetClass>("stock");
+  const [universe, setUniverse] = useState("");
+  const [watchlistId, setWatchlistId] = useState<string | undefined>();
   const [filters, setFilters] = useState(DEFAULT_GAP_FILTERS);
   const [busy, setBusy] = useState(false);
   const [run, setRun] = useState<ScanRun | null>(null);
   const [history, setHistory] = useState<ScanRun[]>([]);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [deploy, setDeploy] = useState<string | null>(null);
 
   const loadHistory = useCallback(() => {
     authFetch("/api/scanner/gappers")
@@ -127,7 +236,12 @@ function GappersTab({ onError }: { onError: (e: string) => void }) {
       const res = await authFetch("/api/scanner/gappers", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(filters),
+        body: JSON.stringify({
+          assetClass,
+          ...filters,
+          universe: universe.split(/[\s,]+/).filter(Boolean),
+          watchlistId,
+        }),
       });
       const d = await res.json().catch(() => ({}));
       if (!res.ok) return onError(d.error ?? "Scan failed");
@@ -143,6 +257,7 @@ function GappersTab({ onError }: { onError: (e: string) => void }) {
 
   return (
     <div className="space-y-4">
+      <AssetChips value={assetClass} onChange={(a) => { setAssetClass(a); setWatchlistId(undefined); }} />
       <div className={cn(card, "flex flex-wrap items-end gap-3")}>
         <Field label="Min gap %">
           <input type="number" min={0} value={filters.minGapPct} className={cn(sel, "w-20")}
@@ -152,7 +267,7 @@ function GappersTab({ onError }: { onError: (e: string) => void }) {
           <input type="number" min={0} value={filters.minPrice} className={cn(sel, "w-20")}
             onChange={(e) => setFilters({ ...filters, minPrice: +e.target.value })} />
         </Field>
-        <Field label="Min PM volume">
+        <Field label={VOL_LABEL[assetClass]}>
           <input type="number" min={0} step={10000} value={filters.minPremarketVolume} className={cn(sel, "w-28")}
             onChange={(e) => setFilters({ ...filters, minPremarketVolume: +e.target.value })} />
         </Field>
@@ -160,9 +275,15 @@ function GappersTab({ onError }: { onError: (e: string) => void }) {
           <input type="number" min={1} max={30} value={filters.topN} className={cn(sel, "w-16")}
             onChange={(e) => setFilters({ ...filters, topN: +e.target.value })} />
         </Field>
+        <WatchlistPicker assetClass={assetClass} universe={universe}
+          onPick={(symbols, id) => { setUniverse(symbols.join(",")); setWatchlistId(id); }} />
+        <Field label="Or symbols">
+          <input value={universe} onChange={(e) => { setUniverse(e.target.value); setWatchlistId(undefined); }}
+            placeholder="all" className={cn(sel, "w-32")} />
+        </Field>
         <button onClick={scan} disabled={busy}
           className={cn(btn, "bg-[#2962ff] hover:bg-[#1e53e5]")}>
-          {busy ? "Scanning… (up to 90s)" : "▶ Run scan"}
+          {busy ? "Scanning…" : "▶ Run scan"}
         </button>
         {ranAt && (
           <span className="ml-auto text-[10px] text-gray-500">
@@ -195,7 +316,8 @@ function GappersTab({ onError }: { onError: (e: string) => void }) {
               {gappers.map((g: GapperResult) => (
                 <GapperRow key={g.symbol} g={g}
                   expanded={expanded === g.symbol}
-                  onToggle={() => setExpanded(expanded === g.symbol ? null : g.symbol)} />
+                  onToggle={() => setExpanded(expanded === g.symbol ? null : g.symbol)}
+                  onDeploy={() => setDeploy(g.symbol)} />
               ))}
             </tbody>
           </table>
@@ -217,6 +339,13 @@ function GappersTab({ onError }: { onError: (e: string) => void }) {
           </ul>
         </details>
       )}
+      {deploy && (
+        <DeployBotDialog
+          assetClass={assetClass}
+          symbol={deploy}
+          onClose={() => setDeploy(null)}
+        />
+      )}
     </div>
   );
 }
@@ -225,10 +354,12 @@ function GapperRow({
   g,
   expanded,
   onToggle,
+  onDeploy,
 }: {
   g: GapperResult;
   expanded: boolean;
   onToggle: () => void;
+  onDeploy: () => void;
 }) {
   return (
     <>
@@ -248,14 +379,21 @@ function GapperRow({
         <td className="max-w-[220px] truncate px-3 py-2 text-gray-300" title={g.catalyst ?? ""}>
           {g.catalyst ?? "—"}
         </td>
-        <td className="px-3 py-2 text-right">
+        <td className="whitespace-nowrap px-3 py-2 text-right">
           <Link
             href={`/?symbol=${g.symbol}`}
             onClick={(e) => e.stopPropagation()}
             className="rounded bg-neutral-700 px-2 py-0.5 text-[10px] text-gray-200 hover:bg-neutral-600"
           >
             Chart ↗
-          </Link>
+          </Link>{" "}
+          <button
+            onClick={(e) => { e.stopPropagation(); onDeploy(); }}
+            title="Deploy as a trading bot"
+            className="rounded bg-[#1e7a3c] px-2 py-0.5 text-[10px] text-white hover:bg-[#259a4b]"
+          >
+            🤖 Bot
+          </button>
         </td>
       </tr>
       {expanded && g.headlines.length > 0 && (
@@ -276,24 +414,36 @@ function GapperRow({
 /* ─── Tab 2: Setup scanner ──────────────────────────────────────────────── */
 
 function SetupTab({ onError }: { onError: (e: string) => void }) {
+  const [assetClass, setAssetClass] = useState<AssetClass>("stock");
   const [universe, setUniverse] = useState("AMD,NVDA,MU");
+  const [watchlistId, setWatchlistId] = useState<string | undefined>();
   const [strategyId, setStrategyId] = useState("trend-join-long");
   const [busy, setBusy] = useState(false);
   const [run, setRun] = useState<ScanRun | null>(null);
   const [saved, setSaved] = useState(false);
+  const [deploy, setDeploy] = useState<string | null>(null);
 
   const strategies = getCustomStrategies();
+  // TJL is stocks-only — fall back to the first saved strategy otherwise.
+  const effectiveStrategyId =
+    assetClass === "stock"
+      ? strategyId
+      : strategyId === "trend-join-long"
+        ? strategies[0]?.id ?? "trend-join-long"
+        : strategyId;
 
   const scan = async () => {
     setBusy(true);
     onError("");
-    const custom = strategies.find((s) => s.id === strategyId);
+    const custom = strategies.find((s) => s.id === effectiveStrategyId);
     try {
       const res = await authFetch("/api/scanner/setup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          assetClass,
           universe: universe.split(/[\s,]+/).filter(Boolean),
+          watchlistId,
           strategyId: custom ? custom.id : "trend-join-long",
           strategyCode: custom?.code,
           strategyParams: custom
@@ -310,13 +460,14 @@ function SetupTab({ onError }: { onError: (e: string) => void }) {
   };
 
   const saveConfig = async () => {
-    const custom = strategies.find((s) => s.id === strategyId);
+    const custom = strategies.find((s) => s.id === effectiveStrategyId);
     const res = await authFetch("/api/scanner/configs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         kind: "setup",
         name: `Setup · ${custom?.name ?? "Trend Join Long"}`,
+        assetClass,
         universe: universe.split(/[\s,]+/).filter(Boolean),
         strategyId: custom?.id ?? "trend-join-long",
         strategyCode: custom?.code,
@@ -331,15 +482,21 @@ function SetupTab({ onError }: { onError: (e: string) => void }) {
 
   return (
     <div className="space-y-4">
+      <AssetChips value={assetClass} onChange={(a) => { setAssetClass(a); setWatchlistId(undefined); }} />
       <div className={cn(card, "space-y-3")}>
-        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div className="flex flex-wrap items-end gap-3">
+          <WatchlistPicker assetClass={assetClass} universe={universe}
+            onPick={(symbols, id) => { setUniverse(symbols.join(",")); setWatchlistId(id); }} />
           <Field label="Universe (comma-separated)">
-            <input value={universe} onChange={(e) => setUniverse(e.target.value)}
-              placeholder="AMD,NVDA,MU" className={sel} />
+            <input value={universe}
+              onChange={(e) => { setUniverse(e.target.value); setWatchlistId(undefined); }}
+              placeholder="AMD,NVDA,MU" className={cn(sel, "w-48")} />
           </Field>
           <Field label="Setup / strategy">
-            <select value={strategyId} onChange={(e) => setStrategyId(e.target.value)} className={sel}>
-              <option value="trend-join-long">Trend Join Long (article)</option>
+            <select value={strategyId} onChange={(e) => setStrategyId(e.target.value)} className={cn(sel, "w-48")}>
+              {assetClass === "stock" && (
+                <option value="trend-join-long">Trend Join Long (article)</option>
+              )}
               {strategies.map((s) => (
                 <option key={s.id} value={s.id}>
                   ✨ {s.name}
@@ -410,17 +567,33 @@ function SetupTab({ onError }: { onError: (e: string) => void }) {
                   <td className="px-3 py-2 text-right text-gray-400">
                     {s.sma200?.toFixed(2) ?? "—"}
                   </td>
-                  <td className="px-3 py-2 text-right">
+                  <td className="whitespace-nowrap px-3 py-2 text-right">
                     <Link href={`/?symbol=${s.symbol}`}
                       className="rounded bg-neutral-700 px-2 py-0.5 text-[10px] text-gray-200 hover:bg-neutral-600">
                       Chart ↗
-                    </Link>
+                    </Link>{" "}
+                    {s.result === "PASS" && (
+                      <button
+                        onClick={() => setDeploy(s.symbol)}
+                        title="Deploy as a trading bot"
+                        className="rounded bg-[#1e7a3c] px-2 py-0.5 text-[10px] text-white hover:bg-[#259a4b]"
+                      >
+                        🤖 Bot
+                      </button>
+                    )}
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
+      )}
+      {deploy && (
+        <DeployBotDialog
+          assetClass={assetClass}
+          symbol={deploy}
+          onClose={() => setDeploy(null)}
+        />
       )}
     </div>
   );

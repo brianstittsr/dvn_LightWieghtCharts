@@ -7,8 +7,15 @@
  * the Alpaca news API — with an optional one-line GPT summary.
  */
 import { alpacaData, alpacaDataRaw } from "@/lib/alpaca";
+import { hlAssetCtxs } from "@/lib/platforms/hyperliquid";
+import { barsFor } from "@/lib/scanner/data";
+import { CRYPTO_SYMBOLS, FUTURE_SYMBOLS } from "@/lib/symbols";
 import { etNow, etToUtc } from "@/lib/scanner/types";
-import type { GapperFilters, GapperResult } from "@/lib/scanner/types";
+import type {
+  AssetClass,
+  GapperFilters,
+  GapperResult,
+} from "@/lib/scanner/types";
 
 /** Default universe for the snapshots fallback — liquid momentum names. */
 const FALLBACK_UNIVERSE = (
@@ -156,13 +163,104 @@ async function summarizeCatalysts(
   return out;
 }
 
+// ── Crypto / futures gappers ──────────────────────────────────────────────────
+
+/** Crypto "gappers": % move vs the previous UTC-day close + 24h USD volume. */
+async function scanCrypto(
+  filters: GapperFilters,
+  universe: string[],
+): Promise<GapperResult[]> {
+  const ctxs = await hlAssetCtxs();
+  const out: GapperResult[] = [];
+  for (const [i, symbol] of universe.entries()) {
+    const ctx = ctxs.get(symbol.toUpperCase());
+    if (!ctx || !ctx.prevDayPx) continue;
+    const gapPct = ((ctx.markPx - ctx.prevDayPx) / ctx.prevDayPx) * 100;
+    if (gapPct < filters.minGapPct || ctx.markPx < filters.minPrice) continue;
+    if (ctx.dayNtlVlm < filters.minPremarketVolume) continue;
+    out.push({
+      rank: i + 1,
+      symbol: symbol.toUpperCase(),
+      price: ctx.markPx,
+      gapPct,
+      premarketVolume: Math.round(ctx.dayNtlVlm),
+      catalyst: null,
+      headlines: [],
+    });
+  }
+  return out.sort((a, b) => b.gapPct - a.gapPct).map((g, i) => ({ ...g, rank: i + 1 })).slice(0, filters.topN);
+}
+
 /**
- * Run the gapper scan. Cheap filters on the universe first, then the
- * expensive per-ticker work (PM volume, news) only on survivors.
+ * Futures "gappers": current-session open vs prior-session close (daily bars),
+ * current price from the latest 1m bar, overnight volume since 18:00 ET.
+ */
+async function scanFutures(
+  filters: GapperFilters,
+  universe: string[],
+  uid: string | null,
+): Promise<GapperResult[]> {
+  const out: GapperResult[] = [];
+  const { dateKey, minutes } = etNow();
+  // Session opens 18:00 ET the prior day when it's before 18:00 ET now.
+  const sessionStart =
+    minutes < 18 * 60 ? etToUtc(dateKey, 18, 0).getTime() - 86400_000 : etToUtc(dateKey, 18, 0).getTime();
+  await Promise.all(
+    universe.map(async (root) => {
+      try {
+        const [daily, five] = await Promise.all([
+          barsFor("future", root, "1d", 3, uid),
+          barsFor("future", root, "5m", 80, uid),
+        ]);
+        const prev = daily.at(-2);
+        const today = daily.at(-1);
+        const curr = five.at(-1)?.close ?? today?.close;
+        if (!prev || !today || curr == null) return;
+        const gapPct = ((today.open - prev.close) / prev.close) * 100;
+        const overnightVol = five
+          .filter((b) => b.time * 1000 >= sessionStart)
+          .reduce((s, b) => s + (b.volume ?? 0), 0);
+        if (gapPct < filters.minGapPct || curr < filters.minPrice) return;
+        if (overnightVol < filters.minPremarketVolume) return;
+        out.push({
+          rank: 0,
+          symbol: root.toUpperCase(),
+          price: curr,
+          gapPct,
+          premarketVolume: overnightVol,
+          catalyst: null,
+          headlines: [],
+        });
+      } catch {
+        /* per-symbol failures skip that contract */
+      }
+    }),
+  );
+  return out.sort((a, b) => b.gapPct - a.gapPct).map((g, i) => ({ ...g, rank: i + 1 })).slice(0, filters.topN);
+}
+
+/**
+ * Run the gapper scan. Stocks use the Alpaca movers/news path; crypto and
+ * futures evaluate a symbol universe (watchlist or built-in defaults).
  */
 export async function runGappersScan(
   filters: GapperFilters,
+  opts: { assetClass?: AssetClass; universe?: string[]; uid?: string | null } = {},
 ): Promise<GapperResult[]> {
+  const assetClass = opts.assetClass ?? "stock";
+  if (assetClass === "crypto") {
+    const universe = opts.universe?.length
+      ? opts.universe
+      : CRYPTO_SYMBOLS.map((s) => s.value);
+    return scanCrypto(filters, universe);
+  }
+  if (assetClass === "future") {
+    const universe = opts.universe?.length
+      ? opts.universe
+      : FUTURE_SYMBOLS.map((s) => s.value);
+    return scanFutures(filters, universe, opts.uid ?? null);
+  }
+
   let candidates: Candidate[];
   try {
     candidates = await candidatesFromMovers();
