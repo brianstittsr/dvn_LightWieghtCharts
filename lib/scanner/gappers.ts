@@ -7,6 +7,7 @@
  * the Alpaca news API — with an optional one-line GPT summary.
  */
 import { alpacaData, alpacaDataRaw } from "@/lib/alpaca";
+import { cryptoNews, type CryptoNewsItem } from "@/lib/crypto-news";
 import { hlAssetCtxs } from "@/lib/platforms/hyperliquid";
 import { barsFor } from "@/lib/scanner/data";
 import { CRYPTO_SYMBOLS, FUTURE_SYMBOLS } from "@/lib/symbols";
@@ -170,7 +171,10 @@ async function scanCrypto(
   filters: GapperFilters,
   universe: string[],
 ): Promise<GapperResult[]> {
-  const ctxs = await hlAssetCtxs();
+  const [ctxs, news] = await Promise.all([
+    hlAssetCtxs(),
+    cryptoNews().catch(() => [] as CryptoNewsItem[]),
+  ]);
   const out: GapperResult[] = [];
   for (const [i, symbol] of universe.entries()) {
     const ctx = ctxs.get(symbol.toUpperCase());
@@ -178,14 +182,18 @@ async function scanCrypto(
     const gapPct = ((ctx.markPx - ctx.prevDayPx) / ctx.prevDayPx) * 100;
     if (gapPct < filters.minGapPct || ctx.markPx < filters.minPrice) continue;
     if (ctx.dayNtlVlm < filters.minPremarketVolume) continue;
+    const headlines = news
+      .filter((n) => n.coins.includes(symbol.toUpperCase()))
+      .slice(0, 3)
+      .map((n) => n.title);
     out.push({
       rank: i + 1,
       symbol: symbol.toUpperCase(),
       price: ctx.markPx,
       gapPct,
       premarketVolume: Math.round(ctx.dayNtlVlm),
-      catalyst: null,
-      headlines: [],
+      catalyst: headlines[0] ?? null,
+      headlines,
     });
   }
   return out.sort((a, b) => b.gapPct - a.gapPct).map((g, i) => ({ ...g, rank: i + 1 })).slice(0, filters.topN);

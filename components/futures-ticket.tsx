@@ -54,6 +54,7 @@ export function FuturesTicket({
   initialSymbol?: string;
 }) {
   const [platforms, setPlatforms] = useState<FutPlatform[]>([]);
+  const [unauthorized, setUnauthorized] = useState(false);
   const [platform, setPlatform] = useState("");
   const [accountId, setAccountId] = useState<number | null>(null);
   const [contracts, setContracts] = useState<FutContract[]>([]);
@@ -81,8 +82,14 @@ export function FuturesTicket({
   useEffect(() => {
     if (!open) return;
     authFetch("/api/futures/status")
-      .then((r) => r.json())
-      .then((d) => {
+      .then(async (r) => ({ r, d: await r.json().catch(() => ({})) }))
+      .then(({ r, d }) => {
+        setUnauthorized(r.status === 401);
+        if (r.status === 401) {
+          setPlatforms([]);
+          setUnauthorized(true);
+          return;
+        }
         const list: FutPlatform[] = d.data?.platforms ?? [];
         setPlatforms(list);
         const first = list.find((p) => p.accounts.length > 0);
@@ -199,7 +206,13 @@ export function FuturesTicket({
           </button>
         </div>
 
-        {configured.length === 0 ? (
+        {unauthorized ? (
+          <p className="rounded border border-blue-700/40 bg-blue-900/20 p-3 text-xs text-blue-300">
+            🔒 Sign in to load your futures accounts — linked TopStep/Apex
+            accounts live in Firebase and only resolve with a valid login
+            session. Sign out and back in, then reopen this ticket.
+          </p>
+        ) : configured.length === 0 ? (
           <p className="rounded border border-amber-700/40 bg-amber-900/20 p-3 text-xs text-amber-300">
             No futures account linked to your login. In <strong>Admin →
             Trading accounts</strong>, add a TopStep/Apex account with your

@@ -10,6 +10,9 @@ import { verifyUser } from "@/lib/server-auth";
 /** Which futures platforms are configured + their tradeable accounts. */
 export async function GET(req: NextRequest) {
   const uid = await verifyUser(req);
+  if (!uid) {
+    return NextResponse.json({ error: "unauthenticated" }, { status: 401 });
+  }
   const platforms = await Promise.all(
     FUTURES_PLATFORMS.map(async (id) => {
       const resolved = await userCredsFor(id, uid);

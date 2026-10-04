@@ -29,6 +29,7 @@ import { DrawingLayer, type TpSlLevel } from "@/components/drawing-layer";
 import { TradeAlertDialog, type TradeAlert } from "@/components/trade-alert-dialog";
 import { BacktestDialog } from "@/components/backtest-dialog";
 import { BacktestResultPopup } from "@/components/backtest-result-popup";
+import { CryptoNewsDialog } from "@/components/crypto-news-dialog";
 import { JevDashboard } from "@/components/jev-dashboard";
 import type { JevRun } from "@/lib/jev/engine";
 import type { BacktestResult } from "@/lib/backtest";
@@ -108,7 +109,9 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
   /** Symbol for which the user manually dismissed the futures ticket drawer. */
   const [futDismissed, setFutDismissed] = useState<string | null>(null);
   const isFutures = symbolInfo(symbol).source === "futures";
+  const isCrypto = symbolInfo(symbol).source === "hyperliquid";
   const showFutTicket = isFutures && futDismissed !== symbol;
+  const [newsOpen, setNewsOpen] = useState(false);
   const [btOpen, setBtOpen] = useState(false);
   const [btResult, setBtResult] = useState<BacktestResult | null>(null);
   const [jevRun, setJevRun] = useState<JevRun | null>(null);
@@ -586,6 +589,15 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
           </span>
         )}
         <OrderTicket paneSymbol={symbol} lastPrice={price} />
+        {isCrypto && (
+          <button
+            onClick={() => setNewsOpen(true)}
+            title={`Crypto news feed${symbol ? ` — ${symbol}` : ""}`}
+            className="rounded bg-neutral-800 px-1.5 py-1 text-[10px] font-medium text-neutral-300 hover:bg-neutral-700 hover:text-neutral-100"
+          >
+            📰
+          </button>
+        )}
         {isFutures && !showFutTicket && (
           <button
             onClick={() => setFutDismissed(null)}
@@ -651,6 +663,9 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
       />
       <BacktestResultPopup result={btResult} onClose={() => setBtResult(null)} />
       {jevRun && <JevDashboard run={jevRun} onClose={() => setJevRun(null)} />}
+      {newsOpen && isCrypto && (
+        <CryptoNewsDialog symbol={symbol} onClose={() => setNewsOpen(false)} />
+      )}
     </div>
   );
 }
