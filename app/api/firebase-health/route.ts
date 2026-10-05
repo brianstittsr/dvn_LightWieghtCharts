@@ -19,7 +19,13 @@ export async function GET(): Promise<NextResponse> {
   try {
     const auth = await adminAuth();
     await auth.listUsers(1);
-    return NextResponse.json({ configured: true, authOk: true });
+    // projectId is public (it ships in every client bundle) — safe to report
+    // so we can spot a client/admin project mismatch.
+    return NextResponse.json({
+      configured: true,
+      authOk: true,
+      projectId: process.env.FIREBASE_PROJECT_ID ?? null,
+    });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     return NextResponse.json({ configured: true, authOk: false, error: msg.slice(0, 300) });
