@@ -42,3 +42,4 @@ next-env.d.ts
 
 # local app data (admin-managed accounts/settings)
 /data
+dev-server.log
