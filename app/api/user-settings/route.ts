@@ -67,31 +67,36 @@ export async function PUT(req: NextRequest) {
       { status: 400 },
     );
   }
-  const existing = (await storeList<UserSettings>("user-settings.json")).find(
-    (d) => d.uid === uid,
-  );
-  const d = parsed.data;
-  const doc: UserSettings = {
-    id: existing?.id ?? uid,
-    uid,
-    telegramBotToken:
-      d.telegramBotToken !== undefined
-        ? d.telegramBotToken || undefined
-        : existing?.telegramBotToken,
-    telegramChatId:
-      d.telegramChatId !== undefined
-        ? d.telegramChatId || undefined
-        : existing?.telegramChatId,
-    profile: d.profile !== undefined ? d.profile : existing?.profile,
-    updatedAt: new Date().toISOString(),
-  };
-  await storePut("user-settings.json", doc);
-  return NextResponse.json({
-    data: {
-      telegramBotTokenMasked: mask(doc.telegramBotToken),
-      telegramChatId: doc.telegramChatId,
-      hasTelegram: Boolean(doc.telegramBotToken && doc.telegramChatId),
-      profile: doc.profile ?? null,
-    },
-  });
+  try {
+    const existing = (await storeList<UserSettings>("user-settings.json")).find(
+      (d) => d.uid === uid,
+    );
+    const d = parsed.data;
+    const doc: UserSettings = {
+      id: existing?.id ?? uid,
+      uid,
+      telegramBotToken:
+        d.telegramBotToken !== undefined
+          ? d.telegramBotToken || undefined
+          : existing?.telegramBotToken,
+      telegramChatId:
+        d.telegramChatId !== undefined
+          ? d.telegramChatId || undefined
+          : existing?.telegramChatId,
+      profile: d.profile !== undefined ? d.profile : existing?.profile,
+      updatedAt: new Date().toISOString(),
+    };
+    await storePut("user-settings.json", doc);
+    return NextResponse.json({
+      data: {
+        telegramBotTokenMasked: mask(doc.telegramBotToken),
+        telegramChatId: doc.telegramChatId,
+        hasTelegram: Boolean(doc.telegramBotToken && doc.telegramChatId),
+        profile: doc.profile ?? null,
+      },
+    });
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e);
+    return NextResponse.json({ error: `Settings save failed: ${msg.slice(0, 200)}` }, { status: 500 });
+  }
 }
