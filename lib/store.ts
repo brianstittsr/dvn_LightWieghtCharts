@@ -43,7 +43,7 @@ function firestore(): Promise<boolean> {
   probe ??= (async () => {
     try {
       if (!adminConfigured()) return false;
-      await adminDb().listCollections(); // validates the creds for real
+      await (await adminDb()).listCollections(); // validates the creds for real
       return true;
     } catch (e) {
       console.error(
@@ -63,7 +63,7 @@ interface Entity {
 /** All documents in a store (Firestore collection or JSON array file). */
 export async function storeList<T>(file: StoreFile): Promise<T[]> {
   if (await firestore()) {
-    const snap = await adminDb().collection(COLLECTIONS[file]).get();
+    const snap = await (await adminDb()).collection(COLLECTIONS[file]).get();
     return snap.docs.map((d) => d.data() as T);
   }
   const list = await readJson<T[]>(file, []);
@@ -76,7 +76,7 @@ export async function storePut<T extends Entity>(
   doc: T,
 ): Promise<void> {
   if (await firestore()) {
-    await adminDb().collection(COLLECTIONS[file]).doc(doc.id).set(doc);
+    await (await adminDb()).collection(COLLECTIONS[file]).doc(doc.id).set(doc);
     return;
   }
   const list = await storeList<T>(file);
@@ -88,7 +88,7 @@ export async function storePut<T extends Entity>(
 
 export async function storeDelete(file: StoreFile, id: string): Promise<void> {
   if (await firestore()) {
-    await adminDb().collection(COLLECTIONS[file]).doc(id).delete();
+    await (await adminDb()).collection(COLLECTIONS[file]).doc(id).delete();
     return;
   }
   const list = await storeList<Entity>(file);
@@ -101,7 +101,7 @@ export async function storeDelete(file: StoreFile, id: string): Promise<void> {
 /** App-wide settings document (single doc, not a collection of entities). */
 export async function getSettingsDoc<T>(fallback: T): Promise<T> {
   if (await firestore()) {
-    const snap = await adminDb().doc(SETTINGS_DOC).get();
+    const snap = await (await adminDb()).doc(SETTINGS_DOC).get();
     return (snap.exists ? (snap.data() as T) : fallback) ?? fallback;
   }
   return readJson<T>("settings.json", fallback);
@@ -109,7 +109,7 @@ export async function getSettingsDoc<T>(fallback: T): Promise<T> {
 
 export async function putSettingsDoc<T>(value: T): Promise<void> {
   if (await firestore()) {
-    await adminDb().doc(SETTINGS_DOC).set(value as Record<string, unknown>);
+    await (await adminDb()).doc(SETTINGS_DOC).set(value as Record<string, unknown>);
     return;
   }
   await writeJson("settings.json", value);

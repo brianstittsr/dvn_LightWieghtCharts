@@ -11,7 +11,7 @@ export async function verifyUser(req: NextRequest): Promise<string | null> {
   const token = header.startsWith("Bearer ") ? header.slice(7) : "";
   if (!token) return null;
   try {
-    return (await adminAuth().verifyIdToken(token)).uid;
+    return (await (await adminAuth()).verifyIdToken(token)).uid;
   } catch {
     return null;
   }

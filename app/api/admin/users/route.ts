@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
       );
     }
     try {
-      ownerUid = (await adminAuth().getUserByEmail(ownerEmail)).uid;
+      ownerUid = (await (await adminAuth()).getUserByEmail(ownerEmail)).uid;
     } catch {
       return NextResponse.json(
         { error: `No Firebase user found for ${ownerEmail}` },

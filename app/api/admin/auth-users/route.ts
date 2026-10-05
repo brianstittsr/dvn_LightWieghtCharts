@@ -14,7 +14,7 @@ export async function GET(req: NextRequest) {
     );
   }
   try {
-    const res = await adminAuth().listUsers(200);
+    const res = await (await adminAuth()).listUsers(200);
     return NextResponse.json({
       data: {
         users: res.users.map((u) => ({

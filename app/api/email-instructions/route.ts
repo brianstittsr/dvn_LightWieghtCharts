@@ -34,7 +34,7 @@ export async function POST(req: NextRequest) {
   }
   let email: string | undefined;
   try {
-    email = (await adminAuth().getUser(uid)).email ?? undefined;
+    email = (await (await adminAuth()).getUser(uid)).email ?? undefined;
   } catch {
     /* fall through */
   }
