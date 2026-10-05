@@ -35,7 +35,7 @@ interface DrawingLayerProps {
   onLevels?: (levels: TpSlLevel[]) => void;
   /** Ref the layer fills with a "remove this TP/SL line" function — the pane
    *  calls it after a level fires so the line disappears. */
-  consumeLevel?: React.MutableRefObject<((lvl: TpSlLevel) => void) | null>;
+  consumeLevelRef?: React.MutableRefObject<((lvl: TpSlLevel) => void) | null>;
 }
 
 const TP_COLOR = "#22c55e";
@@ -87,7 +87,7 @@ function storageLoad(key: string): Drawing[] {
 }
 
 /** Canvas overlay providing trendline / horizontal-line / rectangle drawing. */
-export function DrawingLayer({ getChart, getSeries, storageKey, getBoxes, getCandles, onAnchorClick, onLevels, consumeLevel }: DrawingLayerProps) {
+export function DrawingLayer({ getChart, getSeries, storageKey, getBoxes, getCandles, onAnchorClick, onLevels, consumeLevelRef }: DrawingLayerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [tool, setTool] = useState<Tool>("cursor");
   // Start empty: localStorage is read in the effect below so SSR markup matches.
@@ -128,8 +128,8 @@ export function DrawingLayer({ getChart, getSeries, storageKey, getBoxes, getCan
 
   // Expose line removal to the pane (fires after a TP/SL trigger).
   useEffect(() => {
-    if (!consumeLevel) return;
-    consumeLevel.current = (lvl: TpSlLevel) => {
+    if (!consumeLevelRef) return;
+    consumeLevelRef.current = (lvl: TpSlLevel) => {
       const next = drawingsRef.current.filter(
         (d) =>
           !(d.kind === lvl.kind && (d as { price?: number }).price === lvl.price),
@@ -137,9 +137,9 @@ export function DrawingLayer({ getChart, getSeries, storageKey, getBoxes, getCan
       if (next.length !== drawingsRef.current.length) persistDrawings(next);
     };
     return () => {
-      consumeLevel.current = null;
+      consumeLevelRef.current = null;
     };
-  }, [consumeLevel, persistDrawings]);
+  }, [consumeLevelRef, persistDrawings]);
 
   // Keep the canvas sized to its container (HiDPI aware).
   useEffect(() => {

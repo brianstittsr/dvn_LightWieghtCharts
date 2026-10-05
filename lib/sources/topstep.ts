@@ -15,9 +15,17 @@ interface ApiErr {
 
 async function api<T>(path: string): Promise<T> {
   const res = await authFetch(path);
-  const body = (await res.json()) as ApiOk<T> | ApiErr;
-  if (!res.ok || !("data" in body)) {
-    throw new Error("error" in body ? body.error : `Request failed: ${res.status}`);
+  const text = await res.text();
+  let body: ApiOk<T> | ApiErr | null = null;
+  try {
+    body = text ? (JSON.parse(text) as ApiOk<T> | ApiErr) : null;
+  } catch {
+    /* non-JSON error body (e.g. an HTML 500 page) */
+  }
+  if (!res.ok || !body || !("data" in body)) {
+    throw new Error(
+      body && "error" in body ? body.error : `Request failed: ${res.status}`,
+    );
   }
   return body.data;
 }

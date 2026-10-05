@@ -27,6 +27,7 @@ import { OrderTicket } from "@/components/order-ticket";
 import { FuturesTicket } from "@/components/futures-ticket";
 import { DrawingLayer, type TpSlLevel } from "@/components/drawing-layer";
 import { TradeAlertDialog, type TradeAlert } from "@/components/trade-alert-dialog";
+import { TpslResultPopup, type TpslResult } from "@/components/tpsl-result-popup";
 import { BacktestDialog } from "@/components/backtest-dialog";
 import { BacktestResultPopup } from "@/components/backtest-result-popup";
 import { CryptoNewsDialog } from "@/components/crypto-news-dialog";
@@ -50,46 +51,52 @@ interface AppliedIndicator {
 const IND_STORAGE = (paneId: string) => `lwc-ind-${paneId}`;
 
 /**
- * A drawn TP/SL level was crossed: close the open Alpaca position for this
- * symbol at market. Falls back to the manual order dialog when there's no
- * position to close (or on futures panes).
+ * A drawn TP/SL level was reached: close the open Alpaca position for this
+ * symbol at market and return the fill detail for the win/loss popup.
+ * Returns null when there's no position to close — the manual order dialog
+ * is shown instead (also the futures-pane path).
  */
 async function closeTpslPosition(opts: {
   symbol: string;
+  kind: "tp" | "sl";
   px: number;
   reason: string;
   fireAlert: (text: string) => void;
   setPendingTrade: (t: TradeAlert) => void;
-}): Promise<void> {
-  const { symbol, px, reason, fireAlert, setPendingTrade } = opts;
-  const fallback = () => setPendingTrade({ symbol, side: "sell", reason, price: px });
-  if (symbolInfo(symbol).source === "futures") {
-    fallback();
-    return;
-  }
+}): Promise<TpslResult | null> {
+  const { symbol, kind, px, reason, fireAlert, setPendingTrade } = opts;
+  const fallback = () => {
+    setPendingTrade({ symbol, side: "sell", reason, price: px });
+    return null;
+  };
+  if (symbolInfo(symbol).source === "futures") return fallback();
   try {
     const res = await fetch("/api/alpaca/positions");
-    const body = (await res.json()) as { data?: { symbol: string; qty: string }[] };
+    const body = (await res.json()) as {
+      data?: { symbol: string; qty: string; avg_entry_price: string; side: string }[];
+    };
     const target = toAlpacaSymbol(symbol).replace("/", "").toUpperCase();
     const pos = (body.data ?? []).find(
       (p) => p.symbol.replace("/", "").toUpperCase() === target,
     );
-    if (!pos) {
-      fallback();
-      return;
-    }
+    if (!pos) return fallback();
     const close = await fetch(
       `/api/alpaca/positions?symbol=${encodeURIComponent(pos.symbol)}`,
       { method: "DELETE" },
     );
-    const closeBody = (await close.json().catch(() => ({}))) as { error?: string };
-    fireAlert(
-      close.ok
-        ? `${reason} — closed ${pos.qty} ${pos.symbol} ≈ $${px.toFixed(2)}`
-        : `${reason} — close failed: ${closeBody.error ?? "unknown error"}`,
-    );
+    if (!close.ok) {
+      const errBody = (await close.json().catch(() => ({}))) as { error?: string };
+      fireAlert(`${reason} — close failed: ${errBody.error ?? "unknown error"}`);
+      return null;
+    }
+    const qty = Number(pos.qty);
+    const entry = Number(pos.avg_entry_price);
+    const side = pos.side === "short" ? "short" : "long";
+    const pnl = (px - entry) * qty * (side === "short" ? -1 : 1);
+    fireAlert(`${reason} — closed ${pos.qty} ${pos.symbol} ≈ $${px.toFixed(2)}`);
+    return { symbol, kind, side, qty, entry, exit: px, pnl };
   } catch {
-    fallback();
+    return fallback();
   }
 }
 
@@ -175,6 +182,10 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
   const tpslRef = useRef<TpSlLevel[]>([]);
   /** TP/SL levels that already fired — each line triggers only once. */
   const hitLevelsRef = useRef<Set<string>>(new Set());
+  /** Filled by DrawingLayer — removes a fired TP/SL line. */
+  const consumeLevelRef = useRef<((lvl: TpSlLevel) => void) | null>(null);
+  /** Win/loss popup after a TP/SL-triggered close. */
+  const [tpslResult, setTpslResult] = useState<TpslResult | null>(null);
 
   // Load persisted indicator instances + AI indicators after mount.
   useEffect(() => {
@@ -407,15 +418,20 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
               prev != null && (prev - lvl.price) * (tick.close - lvl.price) < 0;
             if (!touched && !crossed) continue;
             hitLevelsRef.current.add(key);
+            // Remove the fired line from the chart.
+            consumeLevelRef.current?.(lvl);
             const kind = lvl.kind === "tp" ? "Take profit" : "Stop loss";
             const reason = `${symbol}: ${kind} hit — price reached ${lvl.price.toFixed(2)}`;
             fireAlert(reason);
             void closeTpslPosition({
               symbol,
+              kind: lvl.kind,
               px: tick.close,
               reason,
               fireAlert,
               setPendingTrade,
+            }).then((res) => {
+              if (res) setTpslResult(res);
             });
           }
           if (lastCandle && lastCandle.time === tick.time) {
@@ -736,6 +752,7 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
           getCandles={() => candlesRef.current}
           onAnchorClick={onAnchorClick}
           onLevels={onLevelsChange}
+          consumeLevelRef={consumeLevelRef}
         />
         {instances.length > 0 && (
           <div className="pointer-events-none absolute left-2 top-1.5 z-10 flex flex-wrap gap-x-3 gap-y-0.5">
@@ -771,6 +788,7 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
         )}
       </div>
       <TradeAlertDialog alert={pendingTrade} onClose={() => setPendingTrade(null)} />
+      <TpslResultPopup result={tpslResult} onClose={() => setTpslResult(null)} />
       <BacktestDialog
         open={btOpen}
         symbol={symbol}

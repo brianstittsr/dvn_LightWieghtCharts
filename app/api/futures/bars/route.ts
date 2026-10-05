@@ -31,14 +31,14 @@ export async function GET(req: NextRequest) {
   if (!symbol || !TIMEFRAMES.includes(tf)) {
     return NextResponse.json({ error: "symbol + valid tf required" }, { status: 400 });
   }
-  const resolved = await userCredsFor(platform, await verifyUser(req));
-  if (!resolved) {
-    return NextResponse.json(
-      { error: `No ${platform} account linked to your login — add one in Admin` },
-      { status: 400 },
-    );
-  }
   try {
+    const resolved = await userCredsFor(platform, await verifyUser(req));
+    if (!resolved) {
+      return NextResponse.json(
+        { error: `No ${platform} account linked to your login — add one in Admin` },
+        { status: 400 },
+      );
+    }
     const { unit, n } = TF_UNIT[tf];
     const contract = await resolveFrontContract(resolved.creds, symbol);
     const lookback = BAR_LIMIT * TIMEFRAME_SECONDS[tf] * 1000 * 1.6;

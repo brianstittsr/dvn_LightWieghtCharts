@@ -16,14 +16,14 @@ export async function GET(req: NextRequest) {
   const platform = req.nextUrl.searchParams.get("platform") ?? "";
   const symbol = (req.nextUrl.searchParams.get("symbol") ?? "").toUpperCase();
   let contractId = req.nextUrl.searchParams.get("contractId") ?? "";
-  const resolved = await userCredsFor(platform, await verifyUser(req));
-  if (!resolved || (!contractId && !symbol)) {
-    return NextResponse.json(
-      { error: "platform + contractId (or symbol) required" },
-      { status: 400 },
-    );
-  }
   try {
+    const resolved = await userCredsFor(platform, await verifyUser(req));
+    if (!resolved || (!contractId && !symbol)) {
+      return NextResponse.json(
+        { error: "platform + contractId (or symbol) required" },
+        { status: 400 },
+      );
+    }
     if (!contractId) {
       contractId = (await resolveFrontContract(resolved.creds, symbol)).id;
     }
