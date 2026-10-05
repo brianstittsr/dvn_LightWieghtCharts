@@ -7,6 +7,7 @@ import {
   projectxOpenOrders,
   projectxOpenPositions,
   projectxPlaceOrder,
+  uniqueTag,
   PX_ORDER_TYPE,
   PX_SIDE,
 } from "@/lib/platforms/projectx";
@@ -88,7 +89,7 @@ export async function POST(req: NextRequest) {
           limitPrice: body.limitPrice,
           takeProfitTicks: body.tpTicks,
           stopLossTicks: body.slTicks,
-          customTag: "lwc-dashboard",
+          customTag: uniqueTag("lwc-order"),
         });
         return NextResponse.json({ data: { orderId } });
       }
@@ -112,7 +113,7 @@ export async function POST(req: NextRequest) {
           type: PX_ORDER_TYPE.Market,
           side: pos.type === 1 ? PX_SIDE.Sell : PX_SIDE.Buy,
           size: pos.size,
-          customTag: "lwc-reverse",
+          customTag: uniqueTag("lwc-reverse"),
         });
         return NextResponse.json({ data: { orderId } });
       }

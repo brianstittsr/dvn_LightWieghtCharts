@@ -18,6 +18,7 @@ import {
   projectxOpenPositions,
   projectxPlaceOrder,
   projectxToken,
+  uniqueTag,
   userCredsFor,
   PX_BAR_UNIT,
   PX_ORDER_TYPE,
@@ -257,7 +258,7 @@ async function tick(bot: FuturesBot): Promise<void> {
       size: bot.size,
       takeProfitTicks: bot.tpPoints > 0 ? tpTicks : undefined,
       stopLossTicks: bot.slPoints > 0 ? slTicks : undefined,
-      customTag: `bot:${bot.id}`,
+      customTag: uniqueTag(`bot:${bot.id.slice(0, 8)}`),
     });
     const balance = await projectxAccounts(creds, await projectxToken(creds))
       .then((a) => a.find((x) => x.id === accountId)?.balance)

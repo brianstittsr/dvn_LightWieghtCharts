@@ -247,6 +247,15 @@ export interface PlaceOrderArgs {
   customTag?: string;
 }
 
+/**
+ * ProjectX rejects a customTag already used on the account ("Specified custom
+ * tag is already in use"), so every order needs a unique tag. Prefix stays
+ * human-identifiable; suffix is time+random for same-ms uniqueness.
+ */
+export function uniqueTag(prefix: string): string {
+  return `${prefix}-${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+}
+
 export async function projectxPlaceOrder(
   creds: ProjectXCreds,
   args: PlaceOrderArgs,
