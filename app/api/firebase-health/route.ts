@@ -28,7 +28,13 @@ export async function GET(): Promise<NextResponse> {
     });
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
-    return NextResponse.json({ configured: true, authOk: false, error: msg.slice(0, 300) });
+    return NextResponse.json({
+      configured: true,
+      authOk: false,
+      projectId: process.env.FIREBASE_PROJECT_ID ?? null,
+      clientEmail: process.env.FIREBASE_CLIENT_EMAIL ?? null,
+      error: msg.slice(0, 300),
+    });
   }
 }
 
