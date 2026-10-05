@@ -27,6 +27,7 @@ const ALPACA_TF: Record<string, string> = {
   "5m": "5Min",
   "15m": "15Min",
   "1h": "1Hour",
+  "4h": "4Hour",
   "1d": "1Day",
 };
 
@@ -44,6 +45,7 @@ const PX_TF: Record<string, { unit: number; unitNumber: number }> = {
   "5m": { unit: PX_BAR_UNIT.Minute, unitNumber: 5 },
   "15m": { unit: PX_BAR_UNIT.Minute, unitNumber: 15 },
   "1h": { unit: PX_BAR_UNIT.Hour, unitNumber: 1 },
+  "4h": { unit: PX_BAR_UNIT.Hour, unitNumber: 4 },
   "1d": { unit: PX_BAR_UNIT.Day, unitNumber: 1 },
 };
 
@@ -52,25 +54,60 @@ export function alpacaCryptoSymbol(symbol: string): string {
   return symbol.includes("/") ? symbol : `${symbol}/USD`;
 }
 
+const toCandle = (b: RawBar): Candle => ({
+  time: Math.floor(new Date(b.t).getTime() / 1000),
+  open: b.o,
+  high: b.h,
+  low: b.l,
+  close: b.c,
+  volume: b.v,
+});
+
+/** Alpaca bars over an explicit range, following pagination up to `cap`. */
+async function alpacaBarsRange(
+  path: (pageToken?: string) => string,
+  pick: (res: unknown) => RawBar[] | undefined,
+  cap: number,
+  keys?: AlpacaKeys,
+  raw = false,
+): Promise<Candle[]> {
+  const out: Candle[] = [];
+  let pageToken: string | undefined;
+  do {
+    const res = raw
+      ? await alpacaDataRaw<{ bars?: unknown; next_page_token?: string }>(path(pageToken), keys)
+      : await alpacaData<{ bars?: unknown; next_page_token?: string }>(path(pageToken), undefined, keys);
+    const page = pick(res) ?? [];
+    for (const b of page) out.push(toCandle(b));
+    pageToken = res.next_page_token ?? undefined;
+  } while (pageToken && out.length < cap);
+  return out.slice(0, cap).sort((a, b) => a.time - b.time);
+}
+
 async function alpacaBars(
   symbol: string,
   tf: string,
   limit: number,
   keys?: AlpacaKeys,
+  range?: { fromSec: number; toSec: number },
 ): Promise<Candle[]> {
+  if (range) {
+    const start = new Date(range.fromSec * 1000).toISOString();
+    const end = new Date(range.toSec * 1000).toISOString();
+    return alpacaBarsRange(
+      (pt) =>
+        `/v2/stocks/${encodeURIComponent(symbol)}/bars?timeframe=${ALPACA_TF[tf] ?? "5Min"}&start=${start}&end=${end}&limit=10000${pt ? `&page_token=${pt}` : ""}`,
+      (res) => (res as { bars?: RawBar[] }).bars,
+      10000,
+      keys,
+    );
+  }
   const res = await alpacaData<{ bars?: RawBar[] }>(
     `/v2/stocks/${encodeURIComponent(symbol)}/bars?timeframe=${ALPACA_TF[tf] ?? "5Min"}&limit=${limit}`,
     undefined,
     keys,
   );
-  return (res.bars ?? []).map((b) => ({
-    time: Math.floor(new Date(b.t).getTime() / 1000),
-    open: b.o,
-    high: b.h,
-    low: b.l,
-    close: b.c,
-    volume: b.v,
-  }));
+  return (res.bars ?? []).map(toCandle);
 }
 
 async function alpacaCryptoBars(
@@ -78,7 +115,23 @@ async function alpacaCryptoBars(
   tf: string,
   limit: number,
   keys?: AlpacaKeys,
+  range?: { fromSec: number; toSec: number },
 ): Promise<Candle[]> {
+  if (range) {
+    const start = new Date(range.fromSec * 1000).toISOString();
+    const end = new Date(range.toSec * 1000).toISOString();
+    const sym = alpacaCryptoSymbol(symbol);
+    const candles = await alpacaBarsRange(
+      (pt) =>
+        `/v1beta3/crypto/us/bars?symbols=${encodeURIComponent(sym)}&timeframe=${ALPACA_TF[tf] ?? "5Min"}&start=${start}&end=${end}&limit=10000${pt ? `&page_token=${pt}` : ""}`,
+      (res) => (res as { bars?: Record<string, RawBar[]> }).bars?.[sym],
+      10000,
+      keys,
+      true,
+    ).catch(() => [] as Candle[]);
+    if (candles.length) return candles;
+    return hlBars(symbol, tf, limit, range);
+  }
   const res = await alpacaDataRaw<{ bars?: Record<string, RawBar[]> }>(
     `/v1beta3/crypto/us/bars?symbols=${encodeURIComponent(alpacaCryptoSymbol(symbol))}&timeframe=${ALPACA_TF[tf] ?? "5Min"}&limit=${limit}`,
     keys,
@@ -86,18 +139,21 @@ async function alpacaCryptoBars(
   const bars = res.bars?.[alpacaCryptoSymbol(symbol)];
   // Fall back to Hyperliquid when Alpaca crypto bars aren't entitled.
   if (!bars?.length) return hlBars(symbol, tf, limit);
-  return bars.map((b) => ({
-    time: Math.floor(new Date(b.t).getTime() / 1000),
-    open: b.o,
-    high: b.h,
-    low: b.l,
-    close: b.c,
-    volume: b.v,
-  }));
+  return bars.map(toCandle);
 }
 
-async function hlBars(symbol: string, tf: string, limit: number): Promise<Candle[]> {
-  const rows = await hlCandles(symbol, HL_TF[tf] ?? "5m", limit);
+async function hlBars(
+  symbol: string,
+  tf: string,
+  limit: number,
+  range?: { fromSec: number; toSec: number },
+): Promise<Candle[]> {
+  const rows = await hlCandles(
+    symbol,
+    HL_TF[tf] ?? "5m",
+    range ? 5000 : limit,
+    range ? { startMs: range.fromSec * 1000, endMs: range.toSec * 1000 } : undefined,
+  );
   return rows.map((r) => ({
     time: Math.floor(r.t / 1000),
     open: Number(r.o),
@@ -115,6 +171,7 @@ async function futuresBars(
   root: string,
   tf: string,
   limit: number,
+  range?: { fromSec: number; toSec: number },
 ): Promise<Candle[]> {
   const resolved = await userCredsFor("topstep", uid);
   if (!resolved) throw new Error("No TopStep credentials for futures bars");
@@ -132,7 +189,8 @@ async function futuresBars(
     px.unit,
     px.unitNumber,
     secs * (limit + 10) * 1000,
-    limit,
+    range ? 5000 : limit,
+    range ? { startMs: range.fromSec * 1000, endMs: range.toSec * 1000 } : undefined,
   );
   return bars.map((b) => ({
     time: Math.floor(new Date(b.t).getTime() / 1000),
@@ -160,4 +218,24 @@ export async function barsFor(
   if (assetClass === "stock") return alpacaBars(sym, tf, limit, keys);
   if (assetClass === "crypto") return alpacaCryptoBars(sym, tf, limit, keys);
   return futuresBars(uid, sym, tf, limit);
+}
+
+/**
+ * Candles over an explicit [fromSec, toSec) range — for the optimizer's
+ * user-defined backtest periods. Same venue routing as `barsFor`.
+ */
+export async function barsRangeFor(
+  assetClass: AssetClass,
+  symbol: string,
+  tf: string,
+  fromSec: number,
+  toSec: number,
+  uid: string | null = null,
+  keys?: AlpacaKeys,
+): Promise<Candle[]> {
+  const sym = symbol.toUpperCase();
+  const range = { fromSec, toSec };
+  if (assetClass === "stock") return alpacaBars(sym, tf, 0, keys, range);
+  if (assetClass === "crypto") return alpacaCryptoBars(sym, tf, 0, keys, range);
+  return futuresBars(uid, sym, tf, 0, range);
 }

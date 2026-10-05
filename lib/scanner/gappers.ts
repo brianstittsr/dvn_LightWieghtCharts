@@ -7,6 +7,7 @@
  * the Alpaca news API — with an optional one-line GPT summary.
  */
 import { alpacaData, alpacaDataRaw } from "@/lib/alpaca";
+import { finChat, extractJson } from "@/lib/ai";
 import { cryptoNews, type CryptoNewsItem } from "@/lib/crypto-news";
 import { hlAssetCtxs } from "@/lib/platforms/hyperliquid";
 import { barsFor } from "@/lib/scanner/data";
@@ -116,14 +117,37 @@ async function fetchHeadlines(symbols: string[]): Promise<Map<string, string[]>>
   return map;
 }
 
-/** One-line "why it gapped" per symbol via GPT — best-effort, batched. */
+const CATALYST_SYSTEM =
+  "For each symbol, give the one-sentence news catalyst driving the move (earnings, FDA, partnership...). " +
+  'Return JSON only: {"catalysts":{"SYM":"sentence"}}';
+
+function collectCatalysts(parsed: unknown, out: Map<string, string>): void {
+  const catalysts = (parsed as { catalysts?: Record<string, string> } | null)?.catalysts;
+  for (const [sym, catalyst] of Object.entries(catalysts ?? {})) {
+    if (typeof catalyst === "string") out.set(sym, catalyst);
+  }
+}
+
+/** One-line "why it gapped" per symbol — Fin-R1 first, OpenAI fallback. Best-effort, batched. */
 async function summarizeCatalysts(
   headlines: Map<string, string[]>,
 ): Promise<Map<string, string>> {
   const out = new Map<string, string>();
-  const apiKey = process.env.OPENAI_API_KEY;
   const entries = [...headlines.entries()].filter(([, h]) => h.length > 0);
-  if (!apiKey || entries.length === 0) return out;
+  if (entries.length === 0) return out;
+  const user = entries.map(([s, h]) => `${s}: ${h.join(" | ")}`).join("\n");
+
+  // Local finance-reasoning model (LM Studio) — free, private.
+  try {
+    const res = await finChat({ system: CATALYST_SYSTEM, user, json: true, temperature: 0 });
+    collectCatalysts(extractJson(res.content), out);
+    if (out.size) return out;
+  } catch {
+    /* LM Studio down → try OpenAI */
+  }
+
+  const apiKey = process.env.OPENAI_API_KEY;
+  if (!apiKey) return out;
   try {
     const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
@@ -135,29 +159,17 @@ async function summarizeCatalysts(
         model: "gpt-4o-mini",
         temperature: 0,
         messages: [
-          {
-            role: "system",
-            content:
-              "For each stock, give the one-sentence news catalyst driving the move (earnings, FDA, partnership...). " +
-              'Return JSON only: {"catalysts":{"SYM":"sentence"}}',
-          },
-          {
-            role: "user",
-            content: entries
-              .map(([s, h]) => `${s}: ${h.join(" | ")}`)
-              .join("\n"),
-          },
+          { role: "system", content: CATALYST_SYSTEM },
+          { role: "user", content: user },
         ],
         response_format: { type: "json_object" },
       }),
     });
     const body = await res.json();
-    const parsed = JSON.parse(
-      (body.choices?.[0]?.message?.content as string) ?? "{}",
-    ) as { catalysts?: Record<string, string> };
-    for (const [sym, catalyst] of Object.entries(parsed.catalysts ?? {})) {
-      if (typeof catalyst === "string") out.set(sym, catalyst);
-    }
+    collectCatalysts(
+      JSON.parse((body.choices?.[0]?.message?.content as string) ?? "{}"),
+      out,
+    );
   } catch {
     /* fall back to headlines-as-catalyst */
   }

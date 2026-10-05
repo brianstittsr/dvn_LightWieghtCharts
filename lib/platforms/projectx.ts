@@ -342,6 +342,7 @@ export async function projectxBars(
   unitNumber: number,
   lookbackMs: number,
   limit = 500,
+  range?: { startMs: number; endMs: number },
 ): Promise<ProjectXBar[]> {
   const now = Date.now();
   const r = await pxFetch<SearchResponse<never> & { bars?: ProjectXBar[] }>(
@@ -351,8 +352,8 @@ export async function projectxBars(
     {
       contractId,
       live: false,
-      startTime: new Date(now - lookbackMs).toISOString(),
-      endTime: new Date(now).toISOString(),
+      startTime: new Date(range?.startMs ?? now - lookbackMs).toISOString(),
+      endTime: new Date(range?.endMs ?? now).toISOString(),
       unit,
       unitNumber,
       limit,

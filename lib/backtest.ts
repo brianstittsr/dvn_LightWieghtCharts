@@ -1,7 +1,26 @@
 import type { Candle } from "@/lib/types";
+import type { ParamDef } from "@/lib/indicators/types";
 
 /** Strategies available in the backtest engine. */
 export type BacktestStrategyId = "sma-cross" | "rsi-mean" | "donchian";
+
+/** Optimizable parameters per built-in strategy (defaults = current behavior). */
+export const STRATEGY_PARAMS: Record<BacktestStrategyId, ParamDef[]> = {
+  "sma-cross": [
+    { key: "fast", label: "Fast SMA", type: "number", default: 10, min: 2, max: 100, step: 1 },
+    { key: "slow", label: "Slow SMA", type: "number", default: 30, min: 5, max: 300, step: 1 },
+  ],
+  "rsi-mean": [
+    { key: "period", label: "RSI period", type: "number", default: 14, min: 2, max: 50, step: 1 },
+    { key: "oversold", label: "Oversold", type: "number", default: 30, min: 10, max: 45, step: 1 },
+    { key: "overbought", label: "Overbought", type: "number", default: 70, min: 55, max: 90, step: 1 },
+    { key: "exit", label: "Exit level", type: "number", default: 50, min: 40, max: 60, step: 1 },
+  ],
+  donchian: [
+    { key: "entry", label: "Entry channel", type: "number", default: 20, min: 5, max: 100, step: 1 },
+    { key: "exit", label: "Exit channel", type: "number", default: 10, min: 3, max: 50, step: 1 },
+  ],
+};
 
 export const BACKTEST_STRATEGIES: { id: BacktestStrategyId; label: string; blurb: string }[] = [
   { id: "sma-cross", label: "SMA Crossover (10/30)", blurb: "Long when SMA10 > SMA30; flips short in long/short mode." },
@@ -175,14 +194,23 @@ export function desiredFromCode(
  * Desired position at each bar close. The engine transitions at the next
  * bar's open, so strategies never see the future.
  */
-function desiredPositions(id: string, candles: Candle[], longShort: boolean): Desired[] {
+function desiredPositions(
+  id: string,
+  candles: Candle[],
+  longShort: boolean,
+  params: Record<string, unknown> = {},
+): Desired[] {
   const n = candles.length;
   const flat: Desired[] = new Array<Desired>(n).fill("flat");
   const closes = candles.map((c) => c.close);
+  const num = (k: string, d: number): number => {
+    const v = Number(params[k]);
+    return Number.isFinite(v) ? v : d;
+  };
 
   if (id === "sma-cross") {
-    const fast = sma(closes, 10);
-    const slow = sma(closes, 30);
+    const fast = sma(closes, num("fast", 10));
+    const slow = sma(closes, num("slow", 30));
     for (let i = 0; i < n; i++) {
       const f = fast[i];
       const s = slow[i];
@@ -193,34 +221,39 @@ function desiredPositions(id: string, candles: Candle[], longShort: boolean): De
   }
 
   if (id === "rsi-mean") {
-    const r = rsi(closes, 14);
+    const r = rsi(closes, num("period", 14));
+    const oversold = num("oversold", 30);
+    const overbought = num("overbought", 70);
+    const exitLvl = num("exit", 50);
     let pos: Desired = "flat";
     for (let i = 0; i < n; i++) {
       const v = r[i];
       if (v != null) {
         if (pos === "flat") {
-          if (v < 30) pos = "long";
-          else if (longShort && v > 70) pos = "short";
-        } else if (pos === "long" && v > 50) pos = "flat";
-        else if (pos === "short" && v < 50) pos = "flat";
+          if (v < oversold) pos = "long";
+          else if (longShort && v > overbought) pos = "short";
+        } else if (pos === "long" && v > exitLvl) pos = "flat";
+        else if (pos === "short" && v < exitLvl) pos = "flat";
       }
       flat[i] = pos;
     }
     return flat;
   }
 
-  // donchian: enter on 20-bar channel break, exit on opposite 10-bar touch.
+  // donchian: enter on N-bar channel break, exit on opposite M-bar touch.
+  const entryLen = Math.max(2, Math.floor(num("entry", 20)));
+  const exitLen = Math.max(2, Math.floor(num("exit", 10)));
   let pos: Desired = "flat";
   for (let i = 0; i < n; i++) {
-    if (i >= 20) {
+    if (i >= entryLen) {
       let hh = -Infinity;
       let ll = Infinity;
       let exitLo = Infinity;
       let exitHi = -Infinity;
-      for (let j = i - 20; j < i; j++) {
+      for (let j = i - entryLen; j < i; j++) {
         hh = Math.max(hh, candles[j].high);
         ll = Math.min(ll, candles[j].low);
-        if (j >= i - 10) {
+        if (j >= i - exitLen) {
           exitLo = Math.min(exitLo, candles[j].low);
           exitHi = Math.max(exitHi, candles[j].high);
         }
@@ -254,7 +287,7 @@ export function runBacktest(
   const desired =
     cfg.strategy.startsWith("custom:") && custom
       ? desiredFromCode(custom.code, candles, custom.params ?? {})
-      : desiredPositions(cfg.strategy, candles, cfg.longShort);
+      : desiredPositions(cfg.strategy, candles, cfg.longShort, custom?.params);
   const atrVals = atr(candles, 14);
   const slip = cfg.slippagePct / 100;
 

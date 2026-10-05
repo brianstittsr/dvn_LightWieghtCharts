@@ -4,9 +4,12 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 import {
   BACKTEST_STRATEGIES,
   runBacktest,
+  STRATEGY_PARAMS,
   type BacktestConfig,
   type BacktestResult,
+  type BacktestStrategyId,
 } from "@/lib/backtest";
+import { authFetch } from "@/lib/auth-fetch";
 import {
   deleteCustomStrategy,
   getCustomStrategies,
@@ -22,6 +25,36 @@ import {
   type JevRun,
 } from "@/lib/jev/engine";
 import type { Candle } from "@/lib/types";
+import type { AssetClass } from "@/lib/scanner/types";
+
+interface OptRun {
+  params: Record<string, number>;
+  returnPercent: number;
+  profitFactor: number;
+  maxDrawdownPercent: number;
+  winRate: number;
+  totalTrades: number;
+  score: number;
+}
+
+interface OptResult {
+  bars: number;
+  combos: number;
+  paramKeys: string[];
+  top: OptRun[];
+  worst: OptRun | null;
+}
+
+interface FinAnalysis {
+  provider: string;
+  analysis?: string;
+  regime?: string;
+  overfitWarnings?: string[];
+  suggestedRanges?: Record<string, { min: number; max: number }>;
+  confidence?: string;
+}
+
+const isoDay = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
 
 const inputCls =
   "w-full rounded bg-neutral-800 px-2 py-1 text-xs text-neutral-200 outline-none focus:ring-1 focus:ring-blue-500";
@@ -33,6 +66,7 @@ export function BacktestDialog({
   open,
   symbol,
   timeframe,
+  assetClass,
   getCandles,
   onResult,
   onJevResult,
@@ -41,12 +75,13 @@ export function BacktestDialog({
   open: boolean;
   symbol: string;
   timeframe: string;
+  assetClass: AssetClass;
   getCandles: () => Candle[];
   onResult: (r: BacktestResult) => void;
   onJevResult: (r: JevRun) => void;
   onClose: () => void;
 }) {
-  const [mode, setMode] = useState<"strategy" | "jev">("strategy");
+  const [mode, setMode] = useState<"strategy" | "jev" | "optimize">("strategy");
   const [strategy, setStrategy] = useState<string>("sma-cross");
   const [jevModel, setJevModel] = useState<string>("momentum");
   const [jevSize, setJevSize] = useState("5");
@@ -71,6 +106,15 @@ export function BacktestDialog({
   const [aiQuestions, setAiQuestions] = useState<string[] | null>(null);
   const [aiAnswers, setAiAnswers] = useState<string[]>([]);
 
+  // ── Optimizer tab ────────────────────────────────────────────────────────────
+  const [optFrom, setOptFrom] = useState(() => isoDay(Date.now() - 30 * 86400_000));
+  const [optTo, setOptTo] = useState(() => isoDay(Date.now()));
+  const [optBusy, setOptBusy] = useState(false);
+  const [optResult, setOptResult] = useState<OptResult | null>(null);
+  const [analyzeBusy, setAnalyzeBusy] = useState(false);
+  const [analysis, setAnalysis] = useState<FinAnalysis | null>(null);
+  const [finOnline, setFinOnline] = useState<boolean | null>(null);
+
   // Seed backtest defaults from admin settings each time the dialog opens.
   useEffect(() => {
     if (!open) return;
@@ -90,6 +134,23 @@ export function BacktestDialog({
       cancelled = true;
     };
   }, [open]);
+
+  // Probe the local Fin-R1 server when the Optimize tab is shown.
+  useEffect(() => {
+    if (!open || mode !== "optimize") return;
+    let cancelled = false;
+    fetch("/api/fin/analyze")
+      .then((r) => r.json())
+      .then((d) => {
+        if (!cancelled) setFinOnline(Boolean(d?.ok));
+      })
+      .catch(() => {
+        if (!cancelled) setFinOnline(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, mode]);
 
   if (!open) return null;
 
@@ -219,17 +280,18 @@ export function BacktestDialog({
       longShort,
     };
     try {
-      const params = customSpec
-        ? Object.fromEntries(
-            customSpec.params.map((p) => [p.key, paramVals[p.key] ?? Number(p.default)]),
-          )
-        : undefined;
+      const defs = customSpec
+        ? customSpec.params
+        : (STRATEGY_PARAMS[strategy as BacktestStrategyId] ?? []);
+      const params = Object.fromEntries(
+        defs.map((p) => [p.key, paramVals[p.key] ?? Number(p.default)]),
+      );
       const result = runBacktest(
         candles,
         cfg,
         symbol,
         timeframe,
-        customSpec ? { code: customSpec.code, params } : undefined,
+        { code: customSpec?.code ?? "", params },
       );
       setError(null);
       onResult(result);
@@ -237,6 +299,123 @@ export function BacktestDialog({
     } catch (err) {
       setError(err instanceof Error ? err.message : "Backtest failed");
     }
+  };
+
+  /** Param defs for the selected strategy — built-ins use STRATEGY_PARAMS. */
+  const optParamDefs = customSpec
+    ? customSpec.params
+    : (STRATEGY_PARAMS[strategy as BacktestStrategyId] ?? []);
+  const optSecs = (day: string, endOfDay: boolean): number =>
+    Math.floor(new Date(`${day}T${endOfDay ? "23:59:59" : "00:00:00"}Z`).getTime() / 1000);
+
+  const optimizeBody = (ranges?: Record<string, number[]>) => ({
+    assetClass,
+    symbol,
+    tf: timeframe,
+    from: optSecs(optFrom, false),
+    to: optSecs(optTo, true),
+    strategy,
+    ...(customSpec ? { customSpec: { code: customSpec.code, params: customSpec.params } } : {}),
+    ...(ranges ? { ranges } : {}),
+    config: {
+      initialCapital: Math.max(1, Number(capital) || 10000),
+      riskPerTrade: Math.min(50, Math.max(0.01, Number(risk) || 1)),
+      commission: Math.max(0, Number(commission) || 0),
+      slippagePct: Math.max(0, Number(slippage) || 0),
+      longShort,
+    },
+  });
+
+  const runOptimize = async (ranges?: Record<string, number[]>): Promise<void> => {
+    if (isCustom && !customSpec) {
+      setError("Selected custom strategy was not found — pick another.");
+      return;
+    }
+    if (!optParamDefs.length) {
+      setError("This strategy has no optimizable parameters.");
+      return;
+    }
+    setOptBusy(true);
+    setError(null);
+    if (!ranges) setAnalysis(null);
+    try {
+      const res = await authFetch("/api/optimize", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(optimizeBody(ranges)),
+      });
+      const body = (await res.json()) as OptResult & { error?: string };
+      if (!res.ok) {
+        setError(body.error ?? "Optimization failed");
+        return;
+      }
+      setOptResult(body);
+    } catch {
+      setError("Optimization failed — network error");
+    } finally {
+      setOptBusy(false);
+    }
+  };
+
+  const analyze = async (): Promise<void> => {
+    if (!optResult || !optResult.top.length) return;
+    setAnalyzeBusy(true);
+    setError(null);
+    try {
+      const res = await authFetch("/api/fin/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          context: {
+            symbol,
+            assetClass,
+            tf: timeframe,
+            from: optSecs(optFrom, false),
+            to: optSecs(optTo, true),
+            strategy: stratLabel,
+            bars: optResult.bars,
+            combos: optResult.combos,
+          },
+          topRuns: optResult.top,
+          worstRun: optResult.worst ?? undefined,
+        }),
+      });
+      const body = (await res.json()) as FinAnalysis & { error?: string };
+      if (!res.ok) {
+        setError(body.error ?? "Fin-R1 analysis failed");
+        return;
+      }
+      setAnalysis(body);
+    } catch {
+      setError("Fin-R1 analysis failed — network error");
+    } finally {
+      setAnalyzeBusy(false);
+    }
+  };
+
+  /** Turn Fin-R1's {key:{min,max}} suggestions into a tighter value grid. */
+  const refinedRanges = (): Record<string, number[]> | null => {
+    const s = analysis?.suggestedRanges;
+    if (!s) return null;
+    const out: Record<string, number[]> = {};
+    for (const def of optParamDefs) {
+      const r = s[def.key];
+      if (!r || r.max <= r.min) continue;
+      const vals = new Set<number>();
+      for (let i = 0; i <= 4; i++) {
+        vals.add(Math.round((r.min + ((r.max - r.min) * i) / 4) * 100) / 100);
+      }
+      out[def.key] = [...vals].sort((a, b) => a - b);
+    }
+    return Object.keys(out).length ? out : null;
+  };
+
+  /** Load the winning params into the Strategy tab's param inputs. */
+  const applyBest = (): void => {
+    const best = optResult?.top[0];
+    if (!best) return;
+    setParamVals((v) => ({ ...v, ...best.params }));
+    setMode("strategy");
   };
 
   return (
@@ -259,6 +438,7 @@ export function BacktestDialog({
             [
               ["strategy", "📊 Strategy"],
               ["jev", "⚡ Jev HFT"],
+              ["optimize", "🧪 Optimize"],
             ] as const
           ).map(([m, label]) => (
             <button
@@ -275,7 +455,180 @@ export function BacktestDialog({
           ))}
         </div>
 
-        {mode === "jev" ? (
+        {mode === "optimize" ? (
+          <div className="space-y-2.5">
+            <p className="text-[10px] leading-snug text-neutral-500">
+              Parameter sweep over a custom date range — the server fetches the full
+              window and backtests every combination, then Fin-R1 (local, via LM
+              Studio) can analyze what won and suggest a tighter second sweep.
+            </p>
+
+            <div className="flex items-center justify-between rounded bg-neutral-900 px-2 py-1 text-[10px]">
+              <span className="text-neutral-400">Fin-R1 (LM Studio)</span>
+              <span className={finOnline ? "font-semibold text-green-400" : "font-semibold text-amber-400"}>
+                {finOnline === null ? "checking…" : finOnline ? "● online" : "○ offline — will use OpenAI if set"}
+              </span>
+            </div>
+
+            <label className="block text-[11px] text-neutral-400">
+              Strategy
+              <select
+                value={strategy}
+                onChange={(e) => setStrategy(e.target.value)}
+                className={`${inputCls} mt-1`}
+              >
+                <optgroup label="Built-in">
+                  {BACKTEST_STRATEGIES.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.label}
+                    </option>
+                  ))}
+                </optgroup>
+                {customs.length > 0 && (
+                  <optgroup label="AI generated">
+                    {customs.map((s) => (
+                      <option key={s.id} value={`${CUSTOM_PREFIX}${s.id}`}>
+                        {s.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+              </select>
+            </label>
+
+            <div className="grid grid-cols-2 gap-2">
+              <label className="block text-[11px] text-neutral-400">
+                From
+                <input
+                  type="date"
+                  value={optFrom}
+                  onChange={(e) => setOptFrom(e.target.value)}
+                  className={`${inputCls} mt-1`}
+                />
+              </label>
+              <label className="block text-[11px] text-neutral-400">
+                To
+                <input
+                  type="date"
+                  value={optTo}
+                  onChange={(e) => setOptTo(e.target.value)}
+                  className={`${inputCls} mt-1`}
+                />
+              </label>
+            </div>
+
+            <p className="text-[10px] leading-snug text-neutral-500">
+              Sweeps {optParamDefs.map((p) => p.label).join(", ") || "no params"} — up to
+              200 combinations over {timeframe} bars. Uses the risk settings from the
+              Strategy tab.
+            </p>
+
+            {error && <div className="rounded bg-red-900/30 px-2 py-1.5 text-[11px] text-red-300">{error}</div>}
+
+            <button
+              onClick={() => runOptimize()}
+              disabled={optBusy}
+              className="w-full rounded bg-emerald-600 py-1.5 text-xs font-semibold text-white hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {optBusy ? "Optimizing…" : "Run parameter sweep 🧪"}
+            </button>
+
+            {optResult && (
+              <div className="space-y-2">
+                <div className="text-[10px] text-neutral-500">
+                  {optResult.bars.toLocaleString()} bars · {optResult.combos} combos · ranked by
+                  return − ½·drawdown
+                </div>
+                <div className="max-h-44 overflow-y-auto rounded border border-neutral-800">
+                  <table className="w-full text-[10px]">
+                    <thead className="sticky top-0 bg-neutral-900 text-neutral-400">
+                      <tr>
+                        <th className="px-1.5 py-1 text-left">#</th>
+                        <th className="px-1.5 py-1 text-left">Params</th>
+                        <th className="px-1.5 py-1 text-right">Ret%</th>
+                        <th className="px-1.5 py-1 text-right">PF</th>
+                        <th className="px-1.5 py-1 text-right">DD%</th>
+                        <th className="px-1.5 py-1 text-right">Win%</th>
+                        <th className="px-1.5 py-1 text-right">#</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {optResult.top.map((r, i) => (
+                        <tr key={i} className={`border-t border-neutral-800 ${i === 0 ? "bg-emerald-900/20" : ""}`}>
+                          <td className="px-1.5 py-1 text-neutral-500">{i + 1}</td>
+                          <td className="px-1.5 py-1 font-mono text-neutral-300">
+                            {Object.entries(r.params).map(([k, v]) => `${k}=${v}`).join(" ")}
+                          </td>
+                          <td className={`px-1.5 py-1 text-right font-semibold ${r.returnPercent >= 0 ? "text-green-400" : "text-red-400"}`}>
+                            {r.returnPercent.toFixed(1)}
+                          </td>
+                          <td className="px-1.5 py-1 text-right text-neutral-300">{r.profitFactor.toFixed(2)}</td>
+                          <td className="px-1.5 py-1 text-right text-amber-400">{r.maxDrawdownPercent.toFixed(1)}</td>
+                          <td className="px-1.5 py-1 text-right text-neutral-300">{r.winRate.toFixed(0)}</td>
+                          <td className="px-1.5 py-1 text-right text-neutral-400">{r.totalTrades}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="flex gap-1.5">
+                  <button
+                    onClick={analyze}
+                    disabled={analyzeBusy}
+                    className="flex-1 rounded bg-purple-600 py-1.5 text-xs font-semibold text-white hover:bg-purple-500 disabled:opacity-50"
+                  >
+                    {analyzeBusy ? "Analyzing…" : "🧠 Analyze with Fin-R1"}
+                  </button>
+                  <button
+                    onClick={applyBest}
+                    className="rounded bg-neutral-800 px-3 py-1.5 text-xs font-semibold text-neutral-200 hover:bg-neutral-700"
+                    title="Load the winning params into the Strategy tab"
+                  >
+                    Apply best
+                  </button>
+                </div>
+
+                {analysis && (
+                  <div className="space-y-1.5 rounded border border-purple-900/50 bg-purple-950/20 p-2">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className="font-semibold text-purple-300">Fin-R1 analysis</span>
+                      <span className="rounded bg-neutral-800 px-1.5 py-0.5 text-neutral-400">
+                        {analysis.provider}{analysis.confidence ? ` · ${analysis.confidence}` : ""}
+                      </span>
+                    </div>
+                    {analysis.regime && (
+                      <div className="text-[10px] text-neutral-400">
+                        Regime: <span className="font-semibold text-neutral-200">{analysis.regime}</span>
+                      </div>
+                    )}
+                    {analysis.analysis && (
+                      <p className="whitespace-pre-wrap text-[10px] leading-snug text-neutral-300">
+                        {analysis.analysis}
+                      </p>
+                    )}
+                    {analysis.overfitWarnings && analysis.overfitWarnings.length > 0 && (
+                      <div className="space-y-0.5">
+                        {analysis.overfitWarnings.map((w, i) => (
+                          <div key={i} className="text-[10px] text-amber-400">⚠ {w}</div>
+                        ))}
+                      </div>
+                    )}
+                    {refinedRanges() && (
+                      <button
+                        onClick={() => runOptimize(refinedRanges() ?? undefined)}
+                        disabled={optBusy}
+                        className="w-full rounded border border-purple-700 bg-purple-900/30 py-1 text-[10px] font-semibold text-purple-200 hover:bg-purple-900/50 disabled:opacity-50"
+                      >
+                        {optBusy ? "Running…" : "↻ Run refined sweep on suggested ranges"}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        ) : mode === "jev" ? (
           <div className="space-y-2.5">
             <p className="text-[10px] leading-snug text-neutral-500">
               Jev-style market making: every synthetic block (~a tick) the model answers
@@ -374,9 +727,9 @@ export function BacktestDialog({
             </span>
           </label>
 
-          {customSpec && customSpec.params.length > 0 && (
+          {(customSpec ? customSpec.params : (STRATEGY_PARAMS[strategy as BacktestStrategyId] ?? [])).length > 0 && (
             <div className="grid grid-cols-2 gap-2 rounded border border-neutral-800 p-2">
-              {customSpec.params.map((p) => (
+              {(customSpec ? customSpec.params : (STRATEGY_PARAMS[strategy as BacktestStrategyId] ?? [])).map((p) => (
                 <label key={p.key} className="block text-[11px] text-neutral-400">
                   {p.label}
                   <input

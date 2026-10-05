@@ -66,13 +66,14 @@ export async function hlCandles(
   coin: string,
   interval: string,
   limit = 300,
+  range?: { startMs: number; endMs: number },
 ): Promise<HlCandle[]> {
   const seconds: Record<string, number> = {
     "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400,
   };
   const s = seconds[interval] ?? 60;
-  const endTime = Date.now();
-  const startTime = endTime - s * (limit + 10) * 1000;
+  const endTime = range?.endMs ?? Date.now();
+  const startTime = range?.startMs ?? endTime - s * (limit + 10) * 1000;
   const rows = await hl<HlCandle[]>({
     type: "candleSnapshot",
     req: { coin, interval, startTime, endTime },

@@ -35,6 +35,7 @@ import type { JevRun } from "@/lib/jev/engine";
 import type { BacktestResult } from "@/lib/backtest";
 import { useAlpacaPositions } from "@/lib/positions-store";
 import { toAlpacaSymbol } from "@/lib/alpaca-symbol";
+import { authFetch } from "@/lib/auth-fetch";
 
 interface ChartPaneProps {
   paneId: string;
@@ -47,6 +48,50 @@ interface AppliedIndicator {
 }
 
 const IND_STORAGE = (paneId: string) => `lwc-ind-${paneId}`;
+
+/**
+ * A drawn TP/SL level was crossed: close the open Alpaca position for this
+ * symbol at market. Falls back to the manual order dialog when there's no
+ * position to close (or on futures panes).
+ */
+async function closeTpslPosition(opts: {
+  symbol: string;
+  px: number;
+  reason: string;
+  fireAlert: (text: string) => void;
+  setPendingTrade: (t: TradeAlert) => void;
+}): Promise<void> {
+  const { symbol, px, reason, fireAlert, setPendingTrade } = opts;
+  const fallback = () => setPendingTrade({ symbol, side: "sell", reason, price: px });
+  if (symbolInfo(symbol).source === "futures") {
+    fallback();
+    return;
+  }
+  try {
+    const res = await fetch("/api/alpaca/positions");
+    const body = (await res.json()) as { data?: { symbol: string; qty: string }[] };
+    const target = toAlpacaSymbol(symbol).replace("/", "").toUpperCase();
+    const pos = (body.data ?? []).find(
+      (p) => p.symbol.replace("/", "").toUpperCase() === target,
+    );
+    if (!pos) {
+      fallback();
+      return;
+    }
+    const close = await fetch(
+      `/api/alpaca/positions?symbol=${encodeURIComponent(pos.symbol)}`,
+      { method: "DELETE" },
+    );
+    const closeBody = (await close.json().catch(() => ({}))) as { error?: string };
+    fireAlert(
+      close.ok
+        ? `${reason} — closed ${pos.qty} ${pos.symbol} ≈ $${px.toFixed(2)}`
+        : `${reason} — close failed: ${closeBody.error ?? "unknown error"}`,
+    );
+  } catch {
+    fallback();
+  }
+}
 
 /** Axis labels + crosshair in New York time so they match the session windows. */
 const nyTime = new Intl.DateTimeFormat("en-US", {
@@ -106,6 +151,11 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
   }
   const [alertMsg, setAlertMsg] = useState<string | null>(null);
   const [pendingTrade, setPendingTrade] = useState<TradeAlert | null>(null);
+  /** Open futures position on this contract (futures panes only). */
+  const [futPos, setFutPos] = useState<{
+    symbol: string;
+    position: { side: string; size: number; averagePrice: number } | null;
+  } | null>(null);
   /** Symbol for which the user manually dismissed the futures ticket drawer. */
   const [futDismissed, setFutDismissed] = useState<string | null>(null);
   const isFutures = symbolInfo(symbol).source === "futures";
@@ -123,6 +173,8 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
   const alertTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const boxesRef = useRef<IndicatorBox[]>([]);
   const tpslRef = useRef<TpSlLevel[]>([]);
+  /** TP/SL levels that already fired — each line triggers only once. */
+  const hitLevelsRef = useRef<Set<string>>(new Set());
 
   // Load persisted indicator instances + AI indicators after mount.
   useEffect(() => {
@@ -320,6 +372,7 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
     setAlertMsg(null);
     candlesRef.current = [];
     alertStateRef.current.clear();
+    hitLevelsRef.current.clear();
 
     source
       .fetchHistory(symbol, timeframe)
@@ -343,15 +396,27 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
           if (lastCandle && tick.time < lastCandle.time) return;
           // TP/SL line cross detection (previous close vs new close).
           const prev = lastCandle?.close;
-          if (prev != null) {
-            for (const lvl of tpslRef.current) {
-              const crossed = (prev - lvl.price) * (tick.close - lvl.price) < 0;
-              if (!crossed) continue;
-              const kind = lvl.kind === "tp" ? "Take profit" : "Stop loss";
-              const reason = `${symbol}: ${kind} hit — price crossed ${lvl.price.toFixed(2)}`;
-              fireAlert(reason);
-              setPendingTrade({ symbol, side: "sell", reason, price: tick.close });
-            }
+          for (const lvl of tpslRef.current) {
+            // Each drawn level fires once — redraw it to re-arm.
+            const key = `${lvl.kind}:${lvl.price}`;
+            if (hitLevelsRef.current.has(key)) continue;
+            // Broker-style trigger: any bar whose range contains the level
+            // counts (wicks fill TP/SL), not just close-to-close crosses.
+            const touched = tick.low <= lvl.price && tick.high >= lvl.price;
+            const crossed =
+              prev != null && (prev - lvl.price) * (tick.close - lvl.price) < 0;
+            if (!touched && !crossed) continue;
+            hitLevelsRef.current.add(key);
+            const kind = lvl.kind === "tp" ? "Take profit" : "Stop loss";
+            const reason = `${symbol}: ${kind} hit — price reached ${lvl.price.toFixed(2)}`;
+            fireAlert(reason);
+            void closeTpslPosition({
+              symbol,
+              px: tick.close,
+              reason,
+              fireAlert,
+              setPendingTrade,
+            });
           }
           if (lastCandle && lastCandle.time === tick.time) {
             arr[arr.length - 1] = tick;
@@ -375,6 +440,46 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
       unsubscribe?.();
     };
   }, [symbol, timeframe, recomputeIndicators, updateIndicatorsTick, fireAlert]);
+
+  // Poll the open futures position on this contract (for the header badge).
+  useEffect(() => {
+    if (!isFutures) return;
+    let cancelled = false;
+    let ctx: { platform: string; accountId: number } | null = null;
+    const poll = async (): Promise<void> => {
+      try {
+        if (!ctx) {
+          const s = await authFetch("/api/futures/status").then((r) =>
+            r.ok ? (r.json() as Promise<{ data?: { platforms?: { id: string; configured?: boolean; linkedAccountId?: number; accounts?: { id: number }[] }[] } }>) : null,
+          );
+          const plat = s?.data?.platforms?.find(
+            (p) => p.configured && (p.linkedAccountId || p.accounts?.length),
+          );
+          const accountId = plat?.linkedAccountId ?? plat?.accounts?.[0]?.id;
+          if (!plat || !accountId) return;
+          ctx = { platform: plat.id, accountId };
+        }
+        const d = await authFetch(
+          `/api/futures/positions?platform=${ctx.platform}&accountId=${ctx.accountId}&symbol=${encodeURIComponent(symbol)}`,
+        ).then((r) =>
+          r.ok
+            ? (r.json() as Promise<{ data?: { position?: { side: string; size: number; averagePrice: number } | null } }>)
+            : null,
+        );
+        if (!cancelled && d) {
+          setFutPos({ symbol, position: d.data?.position ?? null });
+        }
+      } catch {
+        /* keep last badge on transient errors */
+      }
+    };
+    void poll();
+    const iv = setInterval(() => void poll(), 10_000);
+    return () => {
+      cancelled = true;
+      clearInterval(iv);
+    };
+  }, [isFutures, symbol]);
 
   // Sync indicator line series with the instance list; recompute on param changes.
   useEffect(() => {
@@ -448,6 +553,11 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
 
   const onLevelsChange = useCallback((levels: TpSlLevel[]) => {
     tpslRef.current = levels;
+    // Re-arm levels that no longer exist (erased/redrawn), keep hits for live ones.
+    const keys = new Set(levels.map((l) => `${l.kind}:${l.price}`));
+    for (const k of hitLevelsRef.current) {
+      if (!keys.has(k)) hitLevelsRef.current.delete(k);
+    }
   }, []);
 
   /** ⚓ tool clicked at time t — anchor every AVWAP instance to that bar. */
@@ -583,6 +693,15 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
             {posBadge.plPct.toFixed(2)}%)
           </span>
         )}
+        {isFutures && futPos?.symbol === symbol && futPos.position && (
+          <span
+            className="rounded bg-blue-900/40 px-1.5 py-0.5 font-mono text-[10px] font-semibold text-blue-300"
+            title={`${futPos.position.side} ${futPos.position.size} contract(s) @ ${futPos.position.averagePrice.toFixed(2)}`}
+          >
+            {futPos.position.side === "short" ? "S" : "L"} {futPos.position.size} @{" "}
+            {futPos.position.averagePrice.toFixed(2)}
+          </span>
+        )}
         {alertMsg && (
           <span className="animate-pulse rounded bg-amber-500/20 px-2 py-1 text-[10px] font-medium text-amber-300">
             {alertMsg}
@@ -656,6 +775,7 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
         open={btOpen}
         symbol={symbol}
         timeframe={timeframe}
+        assetClass={isCrypto ? "crypto" : isFutures ? "future" : "stock"}
         getCandles={() => candlesRef.current}
         onResult={onBacktestResult}
         onJevResult={setJevRun}
