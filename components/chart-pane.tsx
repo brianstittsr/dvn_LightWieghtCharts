@@ -63,8 +63,10 @@ async function closeTpslPosition(opts: {
   reason: string;
   fireAlert: (text: string) => void;
   setPendingTrade: (t: TradeAlert) => void;
+  /** Replay mode: compute the hypothetical result without placing an order. */
+  simulate?: boolean;
 }): Promise<TpslResult | null> {
-  const { symbol, kind, px, reason, fireAlert, setPendingTrade } = opts;
+  const { symbol, kind, px, reason, fireAlert, setPendingTrade, simulate } = opts;
   const fallback = () => {
     setPendingTrade({ symbol, side: "sell", reason, price: px });
     return null;
@@ -80,20 +82,24 @@ async function closeTpslPosition(opts: {
       (p) => p.symbol.replace("/", "").toUpperCase() === target,
     );
     if (!pos) return fallback();
-    const close = await fetch(
-      `/api/alpaca/positions?symbol=${encodeURIComponent(pos.symbol)}`,
-      { method: "DELETE" },
-    );
-    if (!close.ok) {
-      const errBody = (await close.json().catch(() => ({}))) as { error?: string };
-      fireAlert(`${reason} — close failed: ${errBody.error ?? "unknown error"}`);
-      return null;
+    if (!simulate) {
+      const close = await fetch(
+        `/api/alpaca/positions?symbol=${encodeURIComponent(pos.symbol)}`,
+        { method: "DELETE" },
+      );
+      if (!close.ok) {
+        const errBody = (await close.json().catch(() => ({}))) as { error?: string };
+        fireAlert(`${reason} — close failed: ${errBody.error ?? "unknown error"}`);
+        return null;
+      }
+      fireAlert(`${reason} — closed ${pos.qty} ${pos.symbol} ≈ $${px.toFixed(2)}`);
+    } else {
+      fireAlert(`${reason} — simulated close ${pos.qty} ${pos.symbol} ≈ $${px.toFixed(2)}`);
     }
     const qty = Number(pos.qty);
     const entry = Number(pos.avg_entry_price);
     const side = pos.side === "short" ? "short" : "long";
     const pnl = (px - entry) * qty * (side === "short" ? -1 : 1);
-    fireAlert(`${reason} — closed ${pos.qty} ${pos.symbol} ≈ $${px.toFixed(2)}`);
     return { symbol, kind, side, qty, entry, exit: px, pnl };
   } catch {
     return fallback();
@@ -186,6 +192,27 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
   const consumeLevelRef = useRef<((lvl: TpSlLevel) => void) | null>(null);
   /** Win/loss popup after a TP/SL-triggered close. */
   const [tpslResult, setTpslResult] = useState<TpslResult | null>(null);
+
+  // ── Bar replay (TradingView-style) ─────────────────────────────
+  /** Complete history — the replay source. Same array as candlesRef in live mode. */
+  const fullCandlesRef = useRef<Candle[]>([]);
+  /** Index into fullCandlesRef of the last displayed bar; null = live mode. */
+  const replayIdxRef = useRef<number | null>(null);
+  const replayTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const replaySelectingRef = useRef(false);
+  /** Lets the chart-click subscription (created once) reach applyReplayTo. */
+  const applyReplayToRef = useRef<((idx: number) => void) | null>(null);
+  const [replayIdx, setReplayIdx] = useState<number | null>(null);
+  const [replaySelecting, setReplaySelecting] = useState(false);
+  const [replayPlaying, setReplayPlaying] = useState(false);
+  /** Bars per second for playback. */
+  const [replaySpeed, setReplaySpeed] = useState(2);
+  /** Length of the loaded history — drives the scrubber's max. */
+  const [histLen, setHistLen] = useState(0);
+  /** Time of the current replay bar (shown in the control bar). */
+  const [replayTime, setReplayTime] = useState<number | null>(null);
+  /** Bump to force the history-load effect to refetch (exits replay into live). */
+  const [reloadTick, setReloadTick] = useState(0);
 
   // Load persisted indicator instances + AI indicators after mount.
   useEffect(() => {
@@ -317,6 +344,126 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
     boxesRef.current = boxes;
   }, [checkLevelAlerts]);
 
+  /**
+   * TP/SL touch check shared by live ticks and replayed bars. Broker-style
+   * semantics: any bar whose range contains the level fills it. `simulate`
+   * (replay mode) shows the win/loss result without placing a real order.
+   */
+  const checkTpSlLevels = useCallback(
+    (tick: Candle, prev: number | undefined, simulate: boolean) => {
+      for (const lvl of tpslRef.current) {
+        // Each drawn level fires once — redraw it to re-arm.
+        const key = `${lvl.kind}:${lvl.price}`;
+        if (hitLevelsRef.current.has(key)) continue;
+        const touched = tick.low <= lvl.price && tick.high >= lvl.price;
+        const crossed =
+          prev != null && (prev - lvl.price) * (tick.close - lvl.price) < 0;
+        if (!touched && !crossed) continue;
+        hitLevelsRef.current.add(key);
+        // Remove the fired line from the chart.
+        consumeLevelRef.current?.(lvl);
+        const kind = lvl.kind === "tp" ? "Take profit" : "Stop loss";
+        const reason = `${symbol}: ${kind} hit — price reached ${lvl.price.toFixed(2)}`;
+        fireAlert(reason);
+        void closeTpslPosition({
+          symbol,
+          kind: lvl.kind,
+          px: tick.close,
+          reason,
+          fireAlert,
+          setPendingTrade,
+          simulate,
+        }).then((res) => {
+          if (res) setTpslResult(res);
+        });
+      }
+    },
+    [fireAlert, symbol, setPendingTrade, setTpslResult],
+  );
+
+  const stopReplayTimer = useCallback(() => {
+    if (replayTimerRef.current) {
+      clearInterval(replayTimerRef.current);
+      replayTimerRef.current = null;
+    }
+  }, []);
+
+  /** Truncate the chart to a replay boundary index and refresh indicators. */
+  const applyReplayTo = useCallback(
+    (idx: number) => {
+      const series = seriesRef.current;
+      const full = fullCandlesRef.current;
+      if (!series || !full.length) return;
+      const clamped = Math.max(0, Math.min(idx, full.length - 1));
+      replayIdxRef.current = clamped;
+      setReplayIdx(clamped);
+      candlesRef.current = full.slice(0, clamped + 1);
+      series.setData(
+        candlesRef.current.map((c) => ({ ...c, time: c.time as UTCTimestamp })),
+      );
+      recomputeIndicators();
+      const last = candlesRef.current[candlesRef.current.length - 1];
+      if (last) {
+        setPrice(last.close);
+        setReplayTime(last.time);
+      }
+    },
+    [recomputeIndicators],
+  );
+  useEffect(() => {
+    applyReplayToRef.current = applyReplayTo;
+  }, [applyReplayTo]);
+
+  /** Append the next replayed bar through the same path a live tick takes. */
+  const stepReplay = useCallback((): boolean => {
+    const idx = replayIdxRef.current;
+    const full = fullCandlesRef.current;
+    if (idx == null || idx >= full.length - 1) return false;
+    const prev = candlesRef.current[candlesRef.current.length - 1]?.close;
+    const next = idx + 1;
+    const bar = full[next];
+    replayIdxRef.current = next;
+    setReplayIdx(next);
+    candlesRef.current.push(bar);
+    seriesRef.current?.update({ ...bar, time: bar.time as UTCTimestamp });
+    setPrice(bar.close);
+    setReplayTime(bar.time);
+    checkTpSlLevels(bar, prev, true);
+    updateIndicatorsTick();
+    return true;
+  }, [checkTpSlLevels, updateIndicatorsTick]);
+
+  /** Exit replay: drop the truncated view and refetch live data. */
+  const exitReplay = useCallback(() => {
+    replayIdxRef.current = null;
+    setReplayIdx(null);
+    setReplayPlaying(false);
+    replaySelectingRef.current = false;
+    setReplaySelecting(false);
+    setReplayTime(null);
+    stopReplayTimer();
+    candlesRef.current = fullCandlesRef.current;
+    setReloadTick((t) => t + 1);
+  }, [
+    stopReplayTimer,
+    setReplayIdx,
+    setReplayPlaying,
+    setReplaySelecting,
+    setReplayTime,
+    setReloadTick,
+  ]);
+
+  // Playback clock — appends one bar per tick until history runs out.
+  useEffect(() => {
+    stopReplayTimer();
+    if (replayPlaying) {
+      replayTimerRef.current = setInterval(() => {
+        if (!stepReplay()) setReplayPlaying(false);
+      }, Math.max(40, Math.round(1000 / replaySpeed)));
+    }
+    return stopReplayTimer;
+  }, [replayPlaying, replaySpeed, stepReplay, stopReplayTimer]);
+
   // Create chart once, resize with the pane.
   useEffect(() => {
     const el = containerRef.current;
@@ -355,6 +502,26 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
     chartRef.current = chart;
     seriesRef.current = series;
 
+    // Replay start selection: in "pick a bar" mode, a click sets the boundary.
+    chart.subscribeClick((param) => {
+      if (!replaySelectingRef.current) return;
+      const t =
+        param.time != null
+          ? Number(param.time)
+          : param.point
+            ? Number(chart.timeScale().coordinateToTime(param.point.x) ?? 0)
+            : 0;
+      if (!t) return;
+      const full = fullCandlesRef.current;
+      if (!full.length) return;
+      // Last bar at or before the clicked time becomes the replay head.
+      let i = full.length - 1;
+      while (i > 0 && full[i].time > t) i--;
+      replaySelectingRef.current = false;
+      setReplaySelecting(false);
+      applyReplayToRef.current?.(i);
+    });
+
     const ro = new ResizeObserver(() => {
       chart.applyOptions({ width: el.clientWidth, height: el.clientHeight });
     });
@@ -384,12 +551,23 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
     candlesRef.current = [];
     alertStateRef.current.clear();
     hitLevelsRef.current.clear();
+    // Leaving live mode for a new load resets any active replay.
+    replayIdxRef.current = null;
+    setReplayIdx(null);
+    setReplayPlaying(false);
+    replaySelectingRef.current = false;
+    setReplaySelecting(false);
+    setReplayTime(null);
+    stopReplayTimer();
 
     source
       .fetchHistory(symbol, timeframe)
       .then((candles) => {
         if (cancelled) return;
-        candlesRef.current = candles.slice();
+        const arr = candles.slice();
+        candlesRef.current = arr;
+        fullCandlesRef.current = arr;
+        setHistLen(arr.length);
         series.setData(candles.map((c) => ({ ...c, time: c.time as UTCTimestamp })));
         chartRef.current?.timeScale().fitContent();
         const last = candles[candles.length - 1];
@@ -400,40 +578,14 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
         }
         recomputeIndicators();
         unsubscribe = source.subscribe(symbol, timeframe, (tick) => {
+          // Replaying — live ticks are parked until the user exits.
+          if (replayIdxRef.current != null) return;
           const arr = candlesRef.current;
           const lastCandle = arr[arr.length - 1];
           // Stale tick (e.g. a delayed quote older than the last bar) — skip
           // it entirely; the chart can't update out-of-order bars.
           if (lastCandle && tick.time < lastCandle.time) return;
-          // TP/SL line cross detection (previous close vs new close).
-          const prev = lastCandle?.close;
-          for (const lvl of tpslRef.current) {
-            // Each drawn level fires once — redraw it to re-arm.
-            const key = `${lvl.kind}:${lvl.price}`;
-            if (hitLevelsRef.current.has(key)) continue;
-            // Broker-style trigger: any bar whose range contains the level
-            // counts (wicks fill TP/SL), not just close-to-close crosses.
-            const touched = tick.low <= lvl.price && tick.high >= lvl.price;
-            const crossed =
-              prev != null && (prev - lvl.price) * (tick.close - lvl.price) < 0;
-            if (!touched && !crossed) continue;
-            hitLevelsRef.current.add(key);
-            // Remove the fired line from the chart.
-            consumeLevelRef.current?.(lvl);
-            const kind = lvl.kind === "tp" ? "Take profit" : "Stop loss";
-            const reason = `${symbol}: ${kind} hit — price reached ${lvl.price.toFixed(2)}`;
-            fireAlert(reason);
-            void closeTpslPosition({
-              symbol,
-              kind: lvl.kind,
-              px: tick.close,
-              reason,
-              fireAlert,
-              setPendingTrade,
-            }).then((res) => {
-              if (res) setTpslResult(res);
-            });
-          }
+          checkTpSlLevels(tick, lastCandle?.close, false);
           if (lastCandle && lastCandle.time === tick.time) {
             arr[arr.length - 1] = tick;
           } else {
@@ -455,7 +607,7 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
       cancelled = true;
       unsubscribe?.();
     };
-  }, [symbol, timeframe, recomputeIndicators, updateIndicatorsTick, fireAlert]);
+  }, [symbol, timeframe, reloadTick, recomputeIndicators, updateIndicatorsTick, fireAlert, checkTpSlLevels, stopReplayTimer]);
 
   // Poll the open futures position on this contract (for the header badge).
   useEffect(() => {
@@ -696,6 +848,23 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
         >
           ▶ BT
         </button>
+        <button
+          onClick={() => {
+            if (replayIdx != null || !fullCandlesRef.current.length) return;
+            const next = !replaySelecting;
+            replaySelectingRef.current = next;
+            setReplaySelecting(next);
+          }}
+          disabled={replayIdx != null}
+          title="Bar replay — click a candle to set the start point, then play it forward"
+          className={`rounded px-1.5 py-1 text-[10px] font-medium disabled:opacity-40 ${
+            replaySelecting
+              ? "bg-blue-800/80 text-blue-100"
+              : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700 hover:text-neutral-100"
+          }`}
+        >
+          ⏮ Replay
+        </button>
         <TickerBar label={symbolInfo(symbol).value} price={price} dayOpen={dayOpen} />
         {posBadge && (
           <span
@@ -770,6 +939,68 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
                 </span>
               );
             })}
+          </div>
+        )}
+        {replaySelecting && (
+          <div className="pointer-events-none absolute left-1/2 top-2 z-20 -translate-x-1/2 rounded bg-blue-900/85 px-3 py-1 text-[11px] font-medium text-blue-100">
+            Bar replay — click a candle to set the start point
+          </div>
+        )}
+        {replayIdx != null && (
+          <div className="absolute bottom-10 left-1/2 z-20 flex w-[92%] max-w-[560px] -translate-x-1/2 items-center gap-2 rounded-lg border border-[#2a3040] bg-[#131722]/95 px-3 py-1.5 shadow-xl">
+            <span className="shrink-0 text-[10px] font-bold uppercase tracking-wide text-blue-400">
+              Replay
+            </span>
+            <input
+              type="range"
+              min={0}
+              max={Math.max(0, histLen - 1)}
+              value={replayIdx}
+              onChange={(e) => applyReplayTo(Number(e.target.value))}
+              className="min-w-0 flex-1 accent-blue-500"
+              aria-label="Replay position"
+            />
+            <button
+              onClick={() => setReplayPlaying((p) => !p)}
+              disabled={replayIdx >= histLen - 1}
+              className="rounded bg-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-200 hover:bg-neutral-700 disabled:opacity-40"
+              title={replayPlaying ? "Pause" : "Play"}
+            >
+              {replayPlaying ? "⏸" : "▶"}
+            </button>
+            <button
+              onClick={() => {
+                setReplayPlaying(false);
+                stepReplay();
+              }}
+              disabled={replayIdx >= histLen - 1}
+              className="rounded bg-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-200 hover:bg-neutral-700 disabled:opacity-40"
+              title="Step forward one bar"
+            >
+              ⏭
+            </button>
+            <select
+              value={replaySpeed}
+              onChange={(e) => setReplaySpeed(Number(e.target.value))}
+              className="rounded bg-neutral-800 px-1 py-0.5 text-[10px] text-neutral-200 outline-none"
+              title="Playback speed (bars/second)"
+            >
+              {[0.5, 1, 2, 5, 10, 25].map((s) => (
+                <option key={s} value={s}>
+                  {s}×
+                </option>
+              ))}
+            </select>
+            <span className="shrink-0 font-mono text-[10px] text-neutral-400">
+              {replayTime != null ? fmtNyDay(replayTime) : ""}
+            </span>
+            <button
+              onClick={exitReplay}
+              className="rounded bg-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-400 hover:bg-red-900/60 hover:text-red-200"
+              title="Exit replay — return to live data"
+            >
+              ✕
+            </button>
           </div>
         )}
         {error && (
