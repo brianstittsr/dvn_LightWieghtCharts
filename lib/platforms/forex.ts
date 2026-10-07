@@ -42,6 +42,8 @@ interface SessionResponse {
   StatusReason?: string;
 }
 
+const DEFAULT_BASE_URL = "https://ciapi.cityindex.com/TradingAPI";
+
 /** Server-side credentials from env (FOREX_*). */
 export function forexCreds(): ForexCreds | null {
   const userName = process.env.FOREX_USERNAME;
@@ -52,8 +54,40 @@ export function forexCreds(): ForexCreds | null {
     userName,
     password,
     appKey,
-    baseUrl: process.env.FOREX_BASE_URL ?? "https://ciapi.cityindex.com/TradingAPI",
+    baseUrl: process.env.FOREX_BASE_URL ?? DEFAULT_BASE_URL,
   };
+}
+
+/**
+ * Resolve FOREX.com creds for a request: the caller's own admin-managed
+ * trading account (platform "forex", apiKey = platform username,
+ * apiSecret = account password, appKey = API AppKey) first, then
+ * env-var creds as the shared fallback.
+ */
+export async function forexUserCreds(uid: string | null): Promise<ForexCreds | null> {
+  if (uid) {
+    const { storeList } = await import("@/lib/store");
+    const accounts = await storeList<{
+      platform: string;
+      ownerUid?: string;
+      apiKey?: string;
+      apiSecret?: string;
+      appKey?: string;
+    }>("users.json");
+    const mine = accounts.find(
+      (a) =>
+        a.platform === "forex" && a.ownerUid === uid && a.apiKey && a.apiSecret && a.appKey,
+    );
+    if (mine?.apiKey && mine.apiSecret && mine.appKey) {
+      return {
+        userName: mine.apiKey,
+        password: mine.apiSecret,
+        appKey: mine.appKey,
+        baseUrl: process.env.FOREX_BASE_URL ?? DEFAULT_BASE_URL,
+      };
+    }
+  }
+  return forexCreds();
 }
 
 async function forexGet<T>(creds: ForexCreds, session: string, path: string): Promise<T> {

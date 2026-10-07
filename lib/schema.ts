@@ -61,6 +61,8 @@ export interface TradingAccountDoc {
   ownerUid: string;
   name: string;
   platform: "alpaca" | "topstep" | "apex" | "schwab" | "ninjatrader" | "forex";
+  /** Third credential — FOREX.com AppKey (until credentialsRef is wired). */
+  appKey?: string;
   /** Pointer to where the credentials live — never the credentials themselves. */
   credentialsRef?: string;
   paper: boolean;

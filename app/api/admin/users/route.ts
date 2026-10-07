@@ -13,6 +13,7 @@ const createSchema = z.object({
   accountId: z.number().int().positive().optional(),
   apiKey: z.string().trim().max(200).optional(),
   apiSecret: z.string().trim().max(200).optional(),
+  appKey: z.string().trim().max(200).optional(),
   notes: z.string().trim().max(500).optional(),
 });
 

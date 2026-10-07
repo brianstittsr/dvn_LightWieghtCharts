@@ -44,7 +44,7 @@ export const PLATFORMS: PlatformDef[] = [
     kind: "broker",
     envVars: ["FOREX_USERNAME", "FOREX_PASSWORD", "FOREX_APP_KEY", "FOREX_BASE_URL (optional)"],
     setup:
-      "FOREX.com uses the GAIN Capital TradingAPI. Open a FOREX.com account (demo works too), then request an API AppKey from support.en@forex.com (allow up to 3 business days). Set FOREX_USERNAME / FOREX_PASSWORD / FOREX_APP_KEY in .env.local.",
+      "FOREX.com uses the GAIN Capital TradingAPI. Open an account (demo works), request an API AppKey from support.en@forex.com, then Admin → Trading accounts → add a FOREX.com account: username → 'API key', password → 'API secret', AppKey → 'AppKey'. Env vars are the shared fallback.",
     capabilities: ["Account balance", "Trading accounts", "80+ FX/CFD markets via REST"],
   },
   {

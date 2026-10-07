@@ -45,14 +45,17 @@ export interface TradingAccount {
   accountId?: number;
   apiKey?: string;
   apiSecret?: string;
+  /** Third credential — FOREX.com AppKey. */
+  appKey?: string;
   notes?: string;
   createdAt: string;
 }
 
 /** Account shape returned by the API — secrets masked. */
-export interface PublicAccount extends Omit<TradingAccount, "apiKey" | "apiSecret"> {
+export interface PublicAccount extends Omit<TradingAccount, "apiKey" | "apiSecret" | "appKey"> {
   apiKeyMasked?: string;
   hasSecret: boolean;
+  hasAppKey: boolean;
 }
 
 const mask = (v?: string): string | undefined =>
@@ -70,5 +73,6 @@ export function toPublic(a: TradingAccount): PublicAccount {
     createdAt: a.createdAt,
     apiKeyMasked: mask(a.apiKey),
     hasSecret: Boolean(a.apiSecret),
+    hasAppKey: Boolean(a.appKey),
   };
 }

@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { PublicAccount } from "@/lib/settings";
 
-const PLATFORMS = ["alpaca", "topstep", "apex", "schwab", "ninjatrader"] as const;
+const PLATFORMS = ["alpaca", "topstep", "apex", "schwab", "ninjatrader", "forex"] as const;
 
 const EMPTY_FORM = {
   name: "",
@@ -12,6 +12,7 @@ const EMPTY_FORM = {
   accountId: "",
   apiKey: "",
   apiSecret: "",
+  appKey: "",
   notes: "",
 };
 
@@ -60,6 +61,7 @@ export default function UsersTab() {
           accountId: form.accountId ? Number(form.accountId) : undefined,
           apiKey: form.apiKey || undefined,
           apiSecret: form.apiSecret || undefined,
+          appKey: form.appKey || undefined,
           notes: form.notes || undefined,
         }),
       });
@@ -131,7 +133,7 @@ export default function UsersTab() {
           >
             {PLATFORMS.map((p) => (
               <option key={p} value={p}>
-                {p === "apex" ? "Apex Trader" : p[0].toUpperCase() + p.slice(1)}
+                {p === "apex" ? "Apex Trader" : p === "forex" ? "FOREX.com" : p[0].toUpperCase() + p.slice(1)}
               </option>
             ))}
           </select>
@@ -140,7 +142,9 @@ export default function UsersTab() {
             placeholder={
               ["topstep", "apex"].includes(form.platform)
                 ? "Platform username (not email)"
-                : "API key / username (optional)"
+                : form.platform === "forex"
+                  ? "FOREX.com username"
+                  : "API key / username (optional)"
             }
             value={form.apiKey}
             onChange={(e) => setForm({ ...form, apiKey: e.target.value })}
@@ -152,12 +156,23 @@ export default function UsersTab() {
             placeholder={
               ["topstep", "apex"].includes(form.platform)
                 ? "ProjectX API key (Settings > API)"
-                : "API secret (optional)"
+                : form.platform === "forex"
+                  ? "Account password"
+                  : "API secret (optional)"
             }
             value={form.apiSecret}
             onChange={(e) => setForm({ ...form, apiSecret: e.target.value })}
             className={input}
           />
+          {form.platform === "forex" && (
+            <input
+              aria-label="AppKey"
+              placeholder="AppKey (from FOREX.com support)"
+              value={form.appKey}
+              onChange={(e) => setForm({ ...form, appKey: e.target.value })}
+              className={input}
+            />
+          )}
           <input
             aria-label="Notes"
             placeholder="Notes"

@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { authFetch } from "@/lib/auth-fetch";
 import { usd } from "@/lib/utils";
 import type { PlatformStatus } from "@/app/api/platforms/route";
 import { PLATFORMS, type PlatformDef } from "@/lib/platforms/registry";
@@ -77,7 +78,7 @@ export function PlatformsDialog({ open, onClose }: { open: boolean; onClose: () 
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
-    fetch("/api/platforms")
+    authFetch("/api/platforms")
       .then(async (r) => {
         const b = (await r.json()) as { data?: { platforms: PlatformStatus[] }; error?: string };
         if (!r.ok || !b.data) throw new Error(b.error ?? "Failed to load");
@@ -103,7 +104,8 @@ export function PlatformsDialog({ open, onClose }: { open: boolean; onClose: () 
           <div>
             <h2 className="text-base font-bold text-neutral-100">Trading Platforms</h2>
             <p className="text-[10px] text-neutral-500">
-              Connected brokers &amp; prop accounts — credentials via .env.local
+              Connected brokers &amp; prop accounts — credentials via Admin → Trading
+              accounts (per-user) with .env.local fallback
             </p>
           </div>
           <button onClick={onClose} className="text-xl text-neutral-500 hover:text-neutral-200" aria-label="Close">
@@ -123,10 +125,10 @@ export function PlatformsDialog({ open, onClose }: { open: boolean; onClose: () 
         </div>
 
         <p className="mt-3 text-[10px] leading-snug text-neutral-600">
-          Note: TopStep/Apex connect through the ProjectX gateway (username + API key). NinjaTrader
-          has no cloud API — it needs a local NT8 bridge. Schwab requires a registered OAuth app.
-          Connected platforms will surface account balances here; order routing for non-Alpaca
-          platforms is a follow-up.
+          Note: TopStep/Apex connect through the ProjectX gateway (username + API key).
+          FOREX.com uses the GAIN Capital TradingAPI (username + password + AppKey).
+          NinjaTrader has no cloud API — it needs a local NT8 bridge. Schwab requires
+          a registered OAuth app. Connected platforms surface account balances here.
         </p>
       </div>
     </div>
