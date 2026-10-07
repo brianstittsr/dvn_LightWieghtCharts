@@ -40,7 +40,7 @@ export interface TradingAccount {
   ownerUid?: string;
   ownerEmail?: string;
   name: string;
-  platform: "alpaca" | "topstep" | "apex" | "schwab" | "ninjatrader";
+  platform: "alpaca" | "topstep" | "apex" | "schwab" | "ninjatrader" | "forex";
   /** Platform-specific account id (e.g. ProjectX account id for TopStep/Apex). */
   accountId?: number;
   apiKey?: string;

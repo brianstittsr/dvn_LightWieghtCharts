@@ -9,7 +9,7 @@ import { toPublic, type TradingAccount } from "@/lib/settings";
 const createSchema = z.object({
   name: z.string().trim().min(1).max(60),
   ownerEmail: z.string().trim().email().max(200).optional(),
-  platform: z.enum(["alpaca", "topstep", "apex", "schwab", "ninjatrader"]),
+  platform: z.enum(["alpaca", "topstep", "apex", "schwab", "ninjatrader", "forex"]),
   accountId: z.number().int().positive().optional(),
   apiKey: z.string().trim().max(200).optional(),
   apiSecret: z.string().trim().max(200).optional(),

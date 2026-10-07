@@ -135,7 +135,7 @@ export interface UserProfile {
   onboarded: boolean;
   tradingStyles: string[];
   experience: "beginner" | "intermediate" | "advanced";
-  /** e.g. "alpaca", "topstep", "schwab", "ninjatrader", "ibkr", "none". */
+  /** e.g. "alpaca", "topstep", "schwab", "ninjatrader", "forex", "ibkr", "none". */
   brokers: string[];
   interests: InterestKey[];
   /** Checked-off guide step ids. */

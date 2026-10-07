@@ -60,7 +60,7 @@ export interface UserDoc {
 export interface TradingAccountDoc {
   ownerUid: string;
   name: string;
-  platform: "alpaca" | "topstep" | "apex" | "schwab" | "ninjatrader";
+  platform: "alpaca" | "topstep" | "apex" | "schwab" | "ninjatrader" | "forex";
   /** Pointer to where the credentials live — never the credentials themselves. */
   credentialsRef?: string;
   paper: boolean;

@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { alpaca } from "@/lib/alpaca";
 import { PLATFORMS, platformConfigured } from "@/lib/platforms/registry";
 import { apexCreds, projectxAccounts, projectxLogin, topstepCreds } from "@/lib/platforms/projectx";
+import { forexClientAccount, forexClientMargin, forexCreds, forexSession } from "@/lib/platforms/forex";
 
 export const dynamic = "force-dynamic";
 
@@ -51,6 +52,32 @@ async function statusOf(id: string): Promise<Partial<PlatformStatus>> {
         account: primary
           ? { label: primary.name, balance: primary.balance, currency: "USD" }
           : { label: "No active accounts" },
+      };
+    }
+    case "forex": {
+      const creds = forexCreds();
+      if (!creds) return { connected: false };
+      const session = await forexSession(creds);
+      const client = await forexClientAccount(creds, session);
+      let balance: number | undefined;
+      let currency = "USD";
+      try {
+        const margin = await forexClientMargin(creds, session, client.ClientAccountId);
+        balance = margin.NetEquity ?? margin.Cash;
+        currency = margin.CurrencyISOCode ?? currency;
+      } catch {
+        // Margin snapshot is informational — account list still proves connectivity.
+      }
+      const primary = client.TradingAccounts?.[0];
+      return {
+        connected: true,
+        account: {
+          label: primary
+            ? `${primary.TradingAccountId} (${primary.TradingAccountStatus ?? "active"})`
+            : (client.LogonUserName ?? "FOREX.com"),
+          balance,
+          currency,
+        },
       };
     }
     case "schwab":

@@ -79,6 +79,27 @@ Alternative (shared/fallback): set APCA_API_KEY_ID and APCA_API_SECRET_KEY in th
 Note: Schwab OAuth tokens expire — a full integration needs the token-refresh flow.`,
   },
   {
+    id: "forex",
+    label: "FOREX.com (FX / CFD)",
+    inlineSteps: [
+      "Open a FOREX.com account — a free demo account works",
+      "Request an API AppKey from support.en@forex.com (up to 3 business days)",
+      "Set FOREX_USERNAME / FOREX_PASSWORD / FOREX_APP_KEY in .env.local",
+      "Check Settings → Platforms — FOREX.com should show 'Connected' with equity",
+    ],
+    emailSubject: "FOREX.com REST API setup",
+    emailBody: `FOREX.com REST API (GAIN Capital TradingAPI) setup:
+
+1. Open a FOREX.com account — demo accounts work with the same API
+2. Request API access / an AppKey from support.en@forex.com (allow up to 3 business days)
+3. In the app's environment set:
+   FOREX_USERNAME=<platform username>
+   FOREX_PASSWORD=<account password>
+   FOREX_APP_KEY=<AppKey from support>
+   (FOREX_BASE_URL optional — defaults to the GAIN gateway)
+4. Verify: GET /api/platforms — the FOREX.com entry shows configured + connected with your equity`,
+  },
+  {
     id: "ninjatrader",
     label: "NinjaTrader (futures)",
     emailSubject: "NinjaTrader API setup",

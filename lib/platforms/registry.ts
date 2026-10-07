@@ -39,6 +39,15 @@ export const PLATFORMS: PlatformDef[] = [
     capabilities: ["Eval/funded account balance", "Positions", "Futures orders"],
   },
   {
+    id: "forex",
+    name: "FOREX.com",
+    kind: "broker",
+    envVars: ["FOREX_USERNAME", "FOREX_PASSWORD", "FOREX_APP_KEY", "FOREX_BASE_URL (optional)"],
+    setup:
+      "FOREX.com uses the GAIN Capital TradingAPI. Open a FOREX.com account (demo works too), then request an API AppKey from support.en@forex.com (allow up to 3 business days). Set FOREX_USERNAME / FOREX_PASSWORD / FOREX_APP_KEY in .env.local.",
+    capabilities: ["Account balance", "Trading accounts", "80+ FX/CFD markets via REST"],
+  },
+  {
     id: "ninjatrader",
     name: "NinjaTrader",
     kind: "desktop",
@@ -69,6 +78,10 @@ export function platformConfigured(id: string): boolean {
       return Boolean(process.env.TOPSTEP_USERNAME && process.env.TOPSTEP_API_KEY);
     case "apex":
       return Boolean(process.env.APEX_USERNAME && process.env.APEX_API_KEY);
+    case "forex":
+      return Boolean(
+        process.env.FOREX_USERNAME && process.env.FOREX_PASSWORD && process.env.FOREX_APP_KEY,
+      );
     case "schwab":
       return Boolean(
         process.env.SCHWAB_APP_KEY && process.env.SCHWAB_APP_SECRET && process.env.SCHWAB_REFRESH_TOKEN,
