@@ -42,6 +42,13 @@ export interface IndicatorBox {
   color: string;
 }
 
+/** A per-bar highlight — paints that candle with the given color. */
+export interface IndicatorBarColor {
+  /** unix seconds — must match a real bar's time. */
+  time: number;
+  color: string;
+}
+
 /** A computed indicator ready to render on the chart. */
 export interface IndicatorOutput {
   series: IndicatorSeries[];
@@ -49,6 +56,8 @@ export interface IndicatorOutput {
   levels?: IndicatorLevel[];
   /** Optional shaded boxes drawn by the chart overlay. */
   boxes?: IndicatorBox[];
+  /** Optional per-bar highlight colors (like Pine's barcolor). */
+  barColors?: IndicatorBarColor[];
 }
 
 /** Indicator definition — builtin or AI-generated. */

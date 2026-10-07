@@ -13,6 +13,7 @@ import {
   type LineData,
   type SeriesMarker,
   type WhitespaceData,
+  type CandlestickData,
 } from "lightweight-charts";
 import { getDataSource } from "@/lib/data-sources";
 import { CRYPTO_SYMBOLS, FUTURE_SYMBOLS, STOCK_SYMBOLS, symbolInfo } from "@/lib/symbols";
@@ -46,6 +47,8 @@ interface ChartPaneProps {
 interface AppliedIndicator {
   defId: string;
   series: ISeriesApi<"Line">[];
+  /** Candlestick overlay for barColors output (per-bar highlights). */
+  candleSeries?: ISeriesApi<"Candlestick">;
 }
 
 const IND_STORAGE = (paneId: string) => `lwc-ind-${paneId}`;
@@ -125,6 +128,25 @@ const fmtNy = (time: number | UTCTimestamp) =>
   nyTime.format(new Date(Number(time) * 1000));
 const fmtNyDay = (time: number | UTCTimestamp) =>
   nyDateTime.format(new Date(Number(time) * 1000));
+
+/**
+ * One bar of a candle-tint overlay: the real candle painted with the tint
+ * color, or a whitespace placeholder when the bar isn't highlighted.
+ */
+function tintPoint(c: Candle, tint?: string): CandlestickData | WhitespaceData {
+  return tint
+    ? {
+        time: c.time as UTCTimestamp,
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+        color: tint,
+        borderColor: tint,
+        wickColor: tint,
+      }
+    : { time: c.time as UTCTimestamp };
+}
 
 function toLinePoint(p: { time: number; value: number | null }): LineData | WhitespaceData {
   return p.value == null
@@ -250,6 +272,10 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
         out.series.forEach((s, i) => {
           applied.series[i]?.setData(s.values.map(toLinePoint));
         });
+        if (applied.candleSeries) {
+          const tint = new Map((out.barColors ?? []).map((b) => [b.time, b.color]));
+          applied.candleSeries.setData(candles.map((c) => tintPoint(c, tint.get(c.time))));
+        }
         if (out.boxes) boxes.push(...out.boxes);
       } catch (err) {
         console.error(`Indicator ${def.name} failed:`, err);
@@ -332,6 +358,11 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
           const last = s.values[s.values.length - 1];
           if (last) applied.series[i]?.update(toLinePoint(last));
         });
+        if (applied.candleSeries && candles.length) {
+          const lc = candles[candles.length - 1];
+          const hit = out.barColors?.find((b) => b.time === lc.time);
+          applied.candleSeries.update(tintPoint(lc, hit?.color));
+        }
         if (out.boxes) boxes.push(...out.boxes);
         if (out.levels && inst.params.alert && lastClose != null) {
           const nearPct = Number(inst.params.near ?? 0.15) / 100;
@@ -659,6 +690,7 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
     for (const [idx, applied] of map) {
       if (!instances[idx] || instances[idx].defId !== applied.defId) {
         applied.series.forEach((s) => chart.removeSeries(s));
+        if (applied.candleSeries) chart.removeSeries(applied.candleSeries);
         map.delete(idx);
       }
     }
@@ -682,7 +714,15 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
             def.pane ?? 0,
           ),
         );
-        map.set(idx, { defId: inst.defId, series: lineSeries });
+        let candleSeries: ISeriesApi<"Candlestick"> | undefined;
+        if (out.barColors) {
+          candleSeries = chart.addSeries(
+            CandlestickSeries,
+            { priceLineVisible: false, lastValueVisible: false },
+            def.pane ?? 0,
+          );
+        }
+        map.set(idx, { defId: inst.defId, series: lineSeries, candleSeries });
       } catch (err) {
         console.error(`Indicator ${def.name} failed:`, err);
       }

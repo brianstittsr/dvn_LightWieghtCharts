@@ -7,6 +7,25 @@ export { SOURCES } from "./math";
 
 export const BUILTIN_INDICATORS: IndicatorDef[] = [...SESSION_INDICATORS, ...OSCILLATOR_INDICATORS,
   {
+    id: "sbc",
+    name: "SBC — Small Body Candles",
+    params: [
+      { key: "maxBody", label: "Max body % of range", type: "number", default: 50, min: 5, max: 95, step: 5 },
+      colorParam("color", "Highlight color", "#f7931a"),
+    ],
+    compute(candles, p) {
+      const pct = num(p, "maxBody", 50) / 100;
+      const tint = color(p, "color", "#f7931a");
+      const barColors = candles
+        .filter((c) => {
+          const range = c.high - c.low;
+          return range > 0 && Math.abs(c.close - c.open) / range < pct;
+        })
+        .map((c) => ({ time: c.time, color: tint }));
+      return { series: [], barColors };
+    },
+  },
+  {
     id: "sma",
     name: "SMA — Simple Moving Average",
     params: [lengthParam(20), sourceParam(), colorParam("color", "Color", "#f59e0b")],
