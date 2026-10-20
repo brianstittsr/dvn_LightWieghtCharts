@@ -26,12 +26,25 @@ import { TickerBar } from "@/components/ticker-bar";
 import { IndicatorMenu } from "@/components/indicator-menu";
 import { OrderTicket } from "@/components/order-ticket";
 import { FuturesTicket } from "@/components/futures-ticket";
-import { DrawingLayer, type TpSlLevel } from "@/components/drawing-layer";
+import { DrawingLayer, type PositionSetup, type TpSlLevel } from "@/components/drawing-layer";
+import { PositionOrderDialog } from "@/components/position-order-dialog";
 import { TradeAlertDialog, type TradeAlert } from "@/components/trade-alert-dialog";
 import { TpslResultPopup, type TpslResult } from "@/components/tpsl-result-popup";
 import { BacktestDialog } from "@/components/backtest-dialog";
 import { BacktestResultPopup } from "@/components/backtest-result-popup";
 import { CryptoNewsDialog } from "@/components/crypto-news-dialog";
+import { ReplaySetupDialog, type ReplaySetupConfig } from "@/components/replay-setup-dialog";
+import { ReplayTradingPanel } from "@/components/replay-trading-panel";
+import { SimPnlCalendar } from "@/components/sim-pnl-calendar";
+import {
+  loadSimAccount,
+  resetSimAccount,
+  simOpenPosition,
+  simClosePosition,
+  simFlatten,
+  simChallengeMetrics,
+  type SimAccountState,
+} from "@/lib/sim-account";
 import { JevDashboard } from "@/components/jev-dashboard";
 import type { JevRun } from "@/lib/jev/engine";
 import type { BacktestResult } from "@/lib/backtest";
@@ -214,6 +227,7 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
   const consumeLevelRef = useRef<((lvl: TpSlLevel) => void) | null>(null);
   /** Win/loss popup after a TP/SL-triggered close. */
   const [tpslResult, setTpslResult] = useState<TpslResult | null>(null);
+  const [positionSetup, setPositionSetup] = useState<PositionSetup | null>(null);
 
   // ── Bar replay (TradingView-style) ─────────────────────────────
   /** Complete history — the replay source. Same array as candlesRef in live mode. */
@@ -235,6 +249,16 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
   const [replayTime, setReplayTime] = useState<number | null>(null);
   /** Bump to force the history-load effect to refetch (exits replay into live). */
   const [reloadTick, setReloadTick] = useState(0);
+
+  // ── Sim trading account (replay practice) ──────────────────────
+  const [simAccount, setSimAccount] = useState<SimAccountState | null>(() => {
+    if (typeof window === "undefined") return null;
+    return loadSimAccount();
+  });
+  const [practiceSetup, setPracticeSetup] = useState(false);
+  const [simCalendarOpen, setSimCalendarOpen] = useState(false);
+  /** True when we're in "practice mode" — sim trades active during replay. */
+  const [practiceMode, setPracticeMode] = useState(false);
 
   // Load persisted indicator instances + AI indicators after mount.
   useEffect(() => {
@@ -484,6 +508,128 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
     setReloadTick,
   ]);
 
+  // ── Practice mode: start replay with historical date range + sim account ──
+  const startPractice = useCallback(
+    async (config: ReplaySetupConfig) => {
+      setPracticeSetup(false);
+      const series = seriesRef.current;
+      if (!series) return;
+
+      const info = symbolInfo(symbol);
+      const assetClass = info.source === "futures" ? "future" : info.source === "alpaca" ? "stock" : "stock";
+      const from = Math.floor(new Date(config.startDate).getTime() / 1000);
+      const to = Math.floor(new Date(config.endDate + "T23:59:59").getTime() / 1000);
+
+      try {
+        const res = await authFetch(
+          `/api/bars?assetClass=${assetClass}&symbol=${encodeURIComponent(symbol)}&tf=${timeframe}&from=${from}&to=${to}`,
+        );
+        const body = (await res.json()) as { candles?: Candle[]; error?: string };
+        if (!res.ok || !body.candles?.length) {
+          setError(body.error ?? "No data for this date range");
+          return;
+        }
+        const candles = body.candles;
+        candlesRef.current = candles.slice(0, 1);
+        fullCandlesRef.current = candles;
+        setHistLen(candles.length);
+        series.setData(
+          candlesRef.current.map((c) => ({ ...c, time: c.time as UTCTimestamp })),
+        );
+        chartRef.current?.timeScale().fitContent();
+        const first = candles[0];
+        if (first) {
+          setPrice(first.close);
+          setDayOpen(first.open);
+          setReplayTime(first.time);
+        }
+        replayIdxRef.current = 0;
+        setReplayIdx(0);
+        recomputeIndicators();
+
+        // Initialize sim account
+        const account = resetSimAccount(config.startBalance, config.challenge);
+        setSimAccount(account);
+        setPracticeMode(true);
+      } catch (e) {
+        setError(e instanceof Error ? e.message : "Failed to load historical data");
+      }
+    },
+    [symbol, timeframe, recomputeIndicators, setPracticeSetup],
+  );
+
+  const exitPractice = useCallback(() => {
+    setPracticeMode(false);
+    exitReplay();
+  }, [exitReplay]);
+
+  // Sim trade handlers for practice mode
+  const simGoLong = useCallback(
+    (qty: number) => {
+      if (!simAccount || price == null) return;
+      const info = symbolInfo(symbol);
+      const assetClass = info.source === "futures" ? "future" : info.source === "alpaca" ? "stock" : "forex";
+      const multiplier = assetClass === "future" ? 50 : 1; // ES/NQ=$50/pt, stocks=$1
+      const time = replayTime ?? Math.floor(Date.now() / 1000);
+      const result = simOpenPosition(simAccount, symbol, "buy", qty, price, time, assetClass, multiplier);
+      setSimAccount(result.state);
+    },
+    [simAccount, price, symbol, replayTime],
+  );
+
+  const simGoShort = useCallback(
+    (qty: number) => {
+      if (!simAccount || price == null) return;
+      const info = symbolInfo(symbol);
+      const assetClass = info.source === "futures" ? "future" : info.source === "alpaca" ? "stock" : "forex";
+      const multiplier = assetClass === "future" ? 50 : 1;
+      const time = replayTime ?? Math.floor(Date.now() / 1000);
+      const result = simOpenPosition(simAccount, symbol, "sell", qty, price, time, assetClass, multiplier);
+      setSimAccount(result.state);
+    },
+    [simAccount, price, symbol, replayTime],
+  );
+
+  const simPartialClose = useCallback(
+    (qty: number) => {
+      if (!simAccount || price == null) return;
+      const info = symbolInfo(symbol);
+      const assetClass = info.source === "futures" ? "future" : info.source === "alpaca" ? "stock" : "forex";
+      const multiplier = assetClass === "future" ? 50 : 1;
+      const time = replayTime ?? Math.floor(Date.now() / 1000);
+      const result = simClosePosition(simAccount, symbol, qty, price, time, assetClass, multiplier);
+      setSimAccount(result.state);
+      if (result.fill.realized !== 0) {
+        setTpslResult({
+          symbol,
+          kind: result.fill.realized > 0 ? "tp" : "sl",
+          side: result.fill.side === "buy" ? "short" : "long",
+          qty: result.fill.closedQty,
+          entry: simAccount.positions.find((p) => p.symbol === symbol)?.avgEntry ?? price,
+          exit: price,
+          pnl: result.fill.realized,
+        });
+      }
+    },
+    [simAccount, price, symbol, replayTime, setTpslResult],
+  );
+
+  const simFlattenAll = useCallback(() => {
+    if (!simAccount || price == null) return;
+    const time = replayTime ?? Math.floor(Date.now() / 1000);
+    const newState = simFlatten(simAccount, { [symbol]: price }, time);
+    setSimAccount(newState);
+  }, [simAccount, price, symbol, replayTime]);
+
+  const handleResetSim = useCallback(() => {
+    if (!simAccount) return;
+    const account = resetSimAccount(
+      simAccount.startBalance,
+      simAccount.challenge,
+    );
+    setSimAccount(account);
+  }, [simAccount]);
+
   // Playback clock — appends one bar per tick until history runs out.
   useEffect(() => {
     stopReplayTimer();
@@ -617,13 +763,23 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
           // it entirely; the chart can't update out-of-order bars.
           if (lastCandle && tick.time < lastCandle.time) return;
           checkTpSlLevels(tick, lastCandle?.close, false);
+          const updated =
+            lastCandle && lastCandle.time === tick.time
+              ? {
+                  ...tick,
+                  open: lastCandle.open,
+                  high: Math.max(lastCandle.high, tick.high),
+                  low: Math.min(lastCandle.low, tick.low),
+                  volume: lastCandle.volume ?? tick.volume,
+                }
+              : tick;
           if (lastCandle && lastCandle.time === tick.time) {
-            arr[arr.length - 1] = tick;
+            arr[arr.length - 1] = updated;
           } else {
-            arr.push(tick);
+            arr.push(updated);
           }
-          series.update({ ...tick, time: tick.time as UTCTimestamp });
-          setPrice(tick.close);
+          series.update({ ...updated, time: updated.time as UTCTimestamp });
+          setPrice(updated.close);
           updateIndicatorsTick();
         });
       })
@@ -905,6 +1061,27 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
         >
           ⏮ Replay
         </button>
+        <button
+          onClick={() => setPracticeSetup(true)}
+          disabled={practiceMode}
+          title="Practice trading — download historical data, pick a date range, and sim trade with a paper account"
+          className={`rounded px-1.5 py-1 text-[10px] font-medium disabled:opacity-40 ${
+            practiceMode
+              ? "bg-purple-800/80 text-purple-100"
+              : "bg-neutral-800 text-neutral-300 hover:bg-neutral-700 hover:text-neutral-100"
+          }`}
+        >
+          Practice
+        </button>
+        {simAccount && (
+          <button
+            onClick={() => setSimCalendarOpen(true)}
+            title="Sim P&L Calendar — view your practice trading results"
+            className="rounded bg-neutral-800 px-1.5 py-1 text-[10px] font-medium text-neutral-300 hover:bg-neutral-700 hover:text-neutral-100"
+          >
+            Sim P&L
+          </button>
+        )}
         <TickerBar label={symbolInfo(symbol).value} price={price} dayOpen={dayOpen} />
         {posBadge && (
           <span
@@ -961,6 +1138,7 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
           getCandles={() => candlesRef.current}
           onAnchorClick={onAnchorClick}
           onLevels={onLevelsChange}
+          onPositionCreated={setPositionSetup}
           consumeLevelRef={consumeLevelRef}
         />
         {instances.length > 0 && (
@@ -1035,13 +1213,27 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
               {replayTime != null ? fmtNyDay(replayTime) : ""}
             </span>
             <button
-              onClick={exitReplay}
+              onClick={practiceMode ? exitPractice : exitReplay}
               className="rounded bg-neutral-800 px-1.5 py-0.5 text-[11px] text-neutral-400 hover:bg-red-900/60 hover:text-red-200"
-              title="Exit replay — return to live data"
+              title={practiceMode ? "Exit practice — return to live data" : "Exit replay — return to live data"}
             >
               ✕
             </button>
           </div>
+        )}
+        {/* Sim trading panel — shown during practice mode */}
+        {practiceMode && replayIdx != null && simAccount && (
+          <ReplayTradingPanel
+            simAccount={simAccount}
+            currentPrice={price}
+            symbol={symbol}
+            assetClass={symbolInfo(symbol).source === "futures" ? "future" : symbolInfo(symbol).source === "alpaca" ? "stock" : "forex"}
+            onGoLong={simGoLong}
+            onGoShort={simGoShort}
+            onPartialClose={simPartialClose}
+            onFlatten={simFlattenAll}
+            challengeMetrics={simAccount.challenge ? simChallengeMetrics(simAccount) : null}
+          />
         )}
         {error && (
           <div className="absolute inset-0 z-10 flex items-center justify-center bg-black/60 px-4 text-center text-xs text-red-400">
@@ -1057,6 +1249,12 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
             onClose={() => setFutDismissed(symbol)}
           />
         )}
+        <PositionOrderDialog
+          setup={positionSetup}
+          symbol={symbol}
+          lastPrice={price}
+          onClose={() => setPositionSetup(null)}
+        />
       </div>
       <TradeAlertDialog alert={pendingTrade} onClose={() => setPendingTrade(null)} />
       <TpslResultPopup result={tpslResult} onClose={() => setTpslResult(null)} />
@@ -1074,6 +1272,20 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
       {jevRun && <JevDashboard run={jevRun} onClose={() => setJevRun(null)} />}
       {newsOpen && isCrypto && (
         <CryptoNewsDialog symbol={symbol} onClose={() => setNewsOpen(false)} />
+      )}
+      <ReplaySetupDialog
+        open={practiceSetup}
+        symbol={symbol}
+        onClose={() => setPracticeSetup(false)}
+        onStart={startPractice}
+      />
+      {simAccount && (
+        <SimPnlCalendar
+          open={simCalendarOpen}
+          onClose={() => setSimCalendarOpen(false)}
+          simAccount={simAccount}
+          onReset={handleResetSim}
+        />
       )}
     </div>
   );
