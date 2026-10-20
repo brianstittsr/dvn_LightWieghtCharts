@@ -201,6 +201,17 @@ function OptionsTicket({ paneSymbol, lastPrice, onStatus }: { paneSymbol: string
   );
 }
 
+/** Partial-close a position via Alpaca. */
+async function partialClose(symbol: string, closeQty: number): Promise<void> {
+  const res = await fetch(
+    `/api/alpaca/positions?symbol=${encodeURIComponent(symbol.toUpperCase())}&qty=${closeQty}`,
+    { method: "DELETE" },
+  );
+  const body = (await res.json()) as { error?: string };
+  if (!res.ok) throw new Error(body.error ?? `Partial close failed (${res.status})`);
+  window.dispatchEvent(new Event("alpaca-orders-changed"));
+}
+
 /** Per-pane trading ticket: equity/crypto orders + options orders via Alpaca. */
 export function OrderTicket({ paneSymbol, lastPrice }: OrderTicketProps) {
   const [open, setOpen] = useState(false);
@@ -209,6 +220,12 @@ export function OrderTicket({ paneSymbol, lastPrice }: OrderTicketProps) {
   const [qty, setQty] = useState("1");
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<Status>(null);
+  const [partialQty, setPartialQty] = useState("1");
+  /** Risk:Reward ratio — e.g. "2" means reward = 2× the risk distance. */
+  const [rrRatio, setRrRatio] = useState("2");
+  /** Stop-loss distance from entry in dollar terms. */
+  const [slDistance, setSlDistance] = useState("1");
+  const [showRr, setShowRr] = useState(false);
   const positions = useAlpacaPositions();
 
   // Re-sync editable symbol when the pane symbol changes.
@@ -225,6 +242,10 @@ export function OrderTicket({ paneSymbol, lastPrice }: OrderTicketProps) {
   // Crypto can't be shorted on Alpaca; stocks can, so only block crypto sells.
   const sellBlocked = isCrypto && sellQty > heldQty;
 
+  const rr = Number(rrRatio) || 2;
+  const slDist = Number(slDistance) || 0;
+  const tpDist = slDist * rr;
+
   async function submit(side: "buy" | "sell") {
     const q = Number(qty);
     if (!symbol.trim() || !(q > 0)) {
@@ -234,10 +255,52 @@ export function OrderTicket({ paneSymbol, lastPrice }: OrderTicketProps) {
     setBusy(true);
     setStatus(null);
     try {
-      await submitOrder({ symbol: symbol.trim(), qty: q, side });
+      // Build bracket payload when R:R is active and we have a valid SL distance + price
+      const payload: {
+        symbol: string;
+        qty: number;
+        side: "buy" | "sell";
+        type?: "market" | "limit";
+        take_profit?: { limit_price: number };
+        stop_loss?: { stop_price: number };
+      } = { symbol: symbol.trim(), qty: q, side };
+
+      if (showRr && slDist > 0 && lastPrice != null) {
+        if (side === "buy") {
+          payload.stop_loss = { stop_price: Math.round((lastPrice - slDist) * 100) / 100 };
+          payload.take_profit = { limit_price: Math.round((lastPrice + tpDist) * 100) / 100 };
+        } else {
+          payload.stop_loss = { stop_price: Math.round((lastPrice + slDist) * 100) / 100 };
+          payload.take_profit = { limit_price: Math.round((lastPrice - tpDist) * 100) / 100 };
+        }
+      }
+
+      await submitOrder(payload);
       setStatus({ kind: "ok", text: `${side.toUpperCase()} ${q} ${symbol.toUpperCase()} submitted` });
     } catch (err) {
       setStatus({ kind: "err", text: err instanceof Error ? err.message : "Order failed" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function doPartialClose() {
+    const pq = Number(partialQty);
+    if (!symbol.trim() || !(pq > 0)) {
+      setStatus({ kind: "err", text: "Set symbol and partial qty > 0" });
+      return;
+    }
+    if (pq > heldQty) {
+      setStatus({ kind: "err", text: `Only ${heldQty} held — can't close ${pq}` });
+      return;
+    }
+    setBusy(true);
+    setStatus(null);
+    try {
+      await partialClose(symbol.trim(), pq);
+      setStatus({ kind: "ok", text: `Closed ${pq} ${symbol.toUpperCase()}` });
+    } catch (err) {
+      setStatus({ kind: "err", text: err instanceof Error ? err.message : "Partial close failed" });
     } finally {
       setBusy(false);
     }
@@ -293,21 +356,87 @@ export function OrderTicket({ paneSymbol, lastPrice }: OrderTicketProps) {
               held {heldQty}
             </span>
           )}
+          {/* Go Long / Go Short */}
           <button
             onClick={() => submit("buy")}
             disabled={busy}
             className="rounded bg-green-600 px-2 py-1 text-xs font-semibold text-white hover:bg-green-500 disabled:opacity-40"
+            title="Go Long — buy"
           >
-            Buy
+            Go Long
           </button>
           <button
             onClick={() => submit("sell")}
             disabled={busy || sellBlocked}
-            title={sellBlocked ? `Only ${heldQty} ${symbol} held — crypto can't be shorted` : undefined}
+            title={sellBlocked ? `Only ${heldQty} ${symbol} held — crypto can't be shorted` : "Go Short — sell"}
             className="rounded bg-red-600 px-2 py-1 text-xs font-semibold text-white hover:bg-red-500 disabled:opacity-40"
           >
-            Sell
+            Go Short
           </button>
+          {/* Partial close */}
+          {heldQty > 0 && (
+            <>
+              <input
+                value={partialQty}
+                onChange={(e) => setPartialQty(e.target.value)}
+                type="number"
+                min="1"
+                max={heldQty}
+                className="w-12 rounded bg-neutral-800 px-1 py-1 font-mono text-xs text-neutral-200 outline-none"
+                aria-label="Partial close qty"
+                title="Quantity to close"
+              />
+              <button
+                onClick={doPartialClose}
+                disabled={busy}
+                className="rounded bg-amber-600 px-2 py-1 text-xs font-semibold text-white hover:bg-amber-500 disabled:opacity-40"
+                title="Partially close position"
+              >
+                Close {partialQty}
+              </button>
+            </>
+          )}
+          {/* Risk:Reward toggle */}
+          <button
+            onClick={() => setShowRr((v) => !v)}
+            className={`rounded px-1.5 py-1 text-[10px] font-semibold ${
+              showRr ? "bg-blue-600 text-white" : "bg-neutral-800 text-neutral-400"
+            }`}
+            title="Toggle risk:reward ratio"
+          >
+            R:R
+          </button>
+          {showRr && (
+            <>
+              <span className="text-[10px] text-neutral-500">SL$</span>
+              <input
+                value={slDistance}
+                onChange={(e) => setSlDistance(e.target.value)}
+                type="number"
+                min="0"
+                step="0.01"
+                className="w-12 rounded bg-neutral-800 px-1 py-1 font-mono text-xs text-neutral-200 outline-none"
+                aria-label="Stop loss distance"
+                title="Stop-loss distance from entry ($)"
+              />
+              <span className="text-[10px] text-neutral-500">R:R</span>
+              <input
+                value={rrRatio}
+                onChange={(e) => setRrRatio(e.target.value)}
+                type="number"
+                min="0.1"
+                step="0.1"
+                className="w-10 rounded bg-neutral-800 px-1 py-1 font-mono text-xs text-neutral-200 outline-none"
+                aria-label="Risk reward ratio"
+                title="Risk:reward ratio — TP = SL × R:R"
+              />
+              {slDist > 0 && (
+                <span className="font-mono text-[10px] text-emerald-400" title="Take profit distance">
+                  TP=${tpDist.toFixed(2)}
+                </span>
+              )}
+            </>
+          )}
         </>
       ) : (
         <OptionsTicket paneSymbol={paneSymbol} lastPrice={lastPrice} onStatus={setStatus} />

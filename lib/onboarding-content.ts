@@ -111,6 +111,94 @@ Note: Schwab OAuth tokens expire — a full integration needs the token-refresh 
 4. Back in the app: Admin → Trading accounts → add a "NinjaTrader" account with your credentials`,
   },
   {
+    id: "oanda",
+    label: "OANDA (FX — self-serve API key)",
+    inlineSteps: [
+      "Sign up at oanda.com — a free practice account works",
+      "fxTrade → My Services → Manage API Access → generate a personal access token",
+      "Trading Platforms → OANDA → enter token + account ID → Save",
+      "Card should show Connected with your account NAV",
+    ],
+    emailSubject: "OANDA v20 REST API setup",
+    emailBody: `OANDA v20 REST API setup:
+
+1. Sign up at https://www.oanda.com — the free practice account works
+2. In fxTrade: My Services → Manage API Access → generate a personal access token
+3. Your account ID is visible in the account summary (e.g. 101-001-12345678-001)
+4. In the app: Trading Platforms → OANDA → token in "API key", account ID in "API secret" → Save
+5. Practice accounts hit api-fxpractice.oanda.com (default); live accounts need OANDA_BASE_URL set to https://api-fxtrade.oanda.com`,
+  },
+  {
+    id: "dxtrade",
+    label: "DXTrade (prop firms — Devexperts)",
+    inlineSteps: [
+      "Get your DXTrade login credentials from your prop firm",
+      "Note the DXTrade base URL for your broker (e.g. https://dx.velotrade.com/dxsca-web)",
+      "Trading Platforms → DXTrade → enter username, password, base URL → Save",
+    ],
+    emailSubject: "DXTrade REST API setup",
+    emailBody: `DXTrade REST API setup:
+
+1. Your prop firm provides DXTrade credentials — login to their web terminal to verify they work
+2. The base URL varies per broker (e.g. https://dx.velotrade.com/dxsca-web)
+3. In the app: Trading Platforms → DXTrade → username → "API key", password → "API secret", base URL → "AppKey/URL" → Save
+4. Note: FTMO revoked DXTrade REST API access in April 2024 — use cTrader for FTMO accounts`,
+  },
+  {
+    id: "ctrader",
+    label: "cTrader (via Open API)",
+    inlineSteps: [
+      "Register a cTrader Open API application at openapi.ctrader.com",
+      "Authorize your trading account via the OAuth flow to get an access token",
+      "Trading Platforms → cTrader → access token, clientId:clientSecret, account ID → Save",
+      "Note: Full trading requires the WebSocket API — REST provides account info only",
+    ],
+    emailSubject: "cTrader Open API setup",
+    emailBody: `cTrader Open API setup:
+
+1. Register an app at https://openapi.ctrader.com — get clientId + clientSecret
+2. Authorize your cTrader account via the OAuth2 browser flow → authorization code → exchange for access token
+3. In the app: Trading Platforms → cTrader → access token → "API key", clientId:clientSecret → "API secret", ctidTraderAccountId → "Account ID"
+4. Important: cTrader's trading operations use a persistent Protobuf WebSocket — REST only validates your account. Use cTrader desktop/web for order placement.`,
+  },
+  {
+    id: "ftmo",
+    label: "FTMO (prop firm — via cTrader/MT)",
+    inlineSteps: [
+      "FTMO has no proprietary API — it routes through cTrader, DXTrade, or MetaTrader",
+      "For cTrader FTMO accounts: register a cTrader Open API app and authorize your FTMO cTrader account",
+      "Trading Platforms → FTMO → access token / login, secret, select backend → Save",
+      "DXTrade REST was revoked Apr 2024. MT4/MT5 require MetaAPI.cloud or a local EA bridge.",
+    ],
+    emailSubject: "FTMO API setup",
+    emailBody: `FTMO API setup:
+
+FTMO does NOT expose a proprietary API. Your options depend on your account's trading platform:
+
+- cTrader (recommended): Register at openapi.ctrader.com, authorize your FTMO cTrader account, use the access token
+- DXTrade: REST API access was revoked in April 2024
+- MetaTrader 4/5: Requires MetaAPI.cloud bridge or a local Expert Advisor — not yet directly supported
+
+In the app: Trading Platforms → FTMO → enter credentials → select backend type → Save`,
+  },
+  {
+    id: "matchtrade",
+    label: "Match-Trader (broker-deployed)",
+    inlineSteps: [
+      "Get your Match-Trader credentials from your broker",
+      "Note the broker's Match-Trader base URL and your broker ID",
+      "Trading Platforms → Match-Trader → email, password, base URL → Save",
+      "Broker ID goes in the Notes field",
+    ],
+    emailSubject: "Match-Trader REST API setup",
+    emailBody: `Match-Trader REST API setup:
+
+1. Your broker provides Match-Trader credentials (email, password, brokerId)
+2. The base URL varies per broker deployment
+3. In the app: Trading Platforms → Match-Trader → email → "API key", password → "API secret", base URL → "AppKey/URL", brokerId → "Notes"
+4. Match-Trader uses dual-token auth (co-auth + tradingApiToken) — the app handles this automatically`,
+  },
+  {
     id: "ibkr",
     label: "Interactive Brokers",
     emailSubject: "Interactive Brokers API setup",

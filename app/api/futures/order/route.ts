@@ -31,8 +31,10 @@ const placeSchema = base.extend({
 });
 
 const manageSchema = base.extend({
-  action: z.enum(["close", "reverse", "cancelContract", "flattenAll", "cancelAll"]),
+  action: z.enum(["close", "partialClose", "reverse", "cancelContract", "flattenAll", "cancelAll"]),
   contractId: z.string().min(1).optional(),
+  /** For partialClose — number of contracts to close. */
+  closeQty: z.number().int().min(1).max(500).optional(),
 });
 
 const bodySchema = z.discriminatedUnion("action", [placeSchema, manageSchema]);
@@ -98,6 +100,30 @@ export async function POST(req: NextRequest) {
         if (!body.contractId) return NextResponse.json({ error: "contractId required" }, { status: 400 });
         await projectxCloseContract(creds, accountId, body.contractId);
         return NextResponse.json({ data: { ok: true } });
+      }
+
+      case "partialClose": {
+        if (!body.contractId) return NextResponse.json({ error: "contractId required" }, { status: 400 });
+        if (!body.closeQty) return NextResponse.json({ error: "closeQty required for partial close" }, { status: 400 });
+        const pos = (await projectxOpenPositions(creds, accountId)).find(
+          (p) => p.contractId === body.contractId,
+        );
+        if (!pos) return NextResponse.json({ error: "No open position on this contract" }, { status: 404 });
+        if (body.closeQty >= pos.size) {
+          // Close all if qty >= position size
+          await projectxCloseContract(creds, accountId, body.contractId);
+        } else {
+          // Partial: opposite-side market order for the partial qty
+          await projectxPlaceOrder(creds, {
+            accountId,
+            contractId: body.contractId,
+            type: PX_ORDER_TYPE.Market,
+            side: pos.type === 1 ? PX_SIDE.Sell : PX_SIDE.Buy,
+            size: body.closeQty,
+            customTag: uniqueTag("lwc-partial"),
+          });
+        }
+        return NextResponse.json({ data: { ok: true, closed: body.closeQty } });
       }
 
       case "reverse": {

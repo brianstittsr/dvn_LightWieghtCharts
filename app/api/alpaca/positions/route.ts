@@ -25,7 +25,11 @@ export async function GET() {
   }
 }
 
-/** DELETE ?symbol=X — close a single position at market (used by TP/SL line crosses). */
+/**
+ * DELETE ?symbol=X — close a position at market.
+ * Optional: &qty=N for partial close (number of shares/units).
+ *           &percentage=P to close P% of the position.
+ */
 export async function DELETE(req: NextRequest) {
   if (!alpacaConfigured()) {
     return NextResponse.json({ error: "Alpaca keys not configured" }, { status: 501 });
@@ -34,9 +38,15 @@ export async function DELETE(req: NextRequest) {
   if (!symbol) {
     return NextResponse.json({ error: "symbol required" }, { status: 400 });
   }
+  const qty = req.nextUrl.searchParams.get("qty");
+  const percentage = req.nextUrl.searchParams.get("percentage");
   try {
+    const params = new URLSearchParams();
+    if (qty) params.set("qty", qty);
+    else if (percentage) params.set("percentage", percentage);
+    const qs = params.toString();
     const order = await alpaca<unknown>(
-      `/v2/positions/${encodeURIComponent(symbol)}`,
+      `/v2/positions/${encodeURIComponent(symbol)}${qs ? `?${qs}` : ""}`,
       { method: "DELETE" },
     );
     return NextResponse.json({ data: order });

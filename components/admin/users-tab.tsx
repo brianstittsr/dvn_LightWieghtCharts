@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useState } from "react";
 import type { PublicAccount } from "@/lib/settings";
 
-const PLATFORMS = ["alpaca", "topstep", "apex", "schwab", "ninjatrader", "forex"] as const;
+const PLATFORMS = ["alpaca", "topstep", "apex", "schwab", "ninjatrader", "forex", "oanda", "dxtrade", "ctrader", "ftmo", "matchtrade"] as const;
 
 const EMPTY_FORM = {
   name: "",
@@ -133,7 +133,7 @@ export default function UsersTab() {
           >
             {PLATFORMS.map((p) => (
               <option key={p} value={p}>
-                {p === "apex" ? "Apex Trader" : p === "forex" ? "FOREX.com" : p[0].toUpperCase() + p.slice(1)}
+                {p === "apex" ? "Apex Trader" : p === "forex" ? "FOREX.com" : p === "oanda" ? "OANDA" : p === "dxtrade" ? "DXTrade" : p === "ctrader" ? "cTrader" : p === "ftmo" ? "FTMO" : p === "matchtrade" ? "Match-Trader" : p[0].toUpperCase() + p.slice(1)}
               </option>
             ))}
           </select>

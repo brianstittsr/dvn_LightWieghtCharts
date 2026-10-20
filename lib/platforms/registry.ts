@@ -57,6 +57,51 @@ export const PLATFORMS: PlatformDef[] = [
     capabilities: ["Requires local NT8 bridge — not available"],
   },
   {
+    id: "oanda",
+    name: "OANDA",
+    kind: "broker",
+    envVars: ["OANDA_API_TOKEN", "OANDA_ACCOUNT_ID", "OANDA_BASE_URL (optional)"],
+    setup:
+      "OANDA v20 REST API. Generate a personal access token at fxTrade → My Services → Manage API Access. Your API credentials: token → 'API key', account ID → 'API secret'. Practice accounts use the default base URL.",
+    capabilities: ["Account balance", "Open positions", "Market/Limit/Stop orders", "Partial close", "80+ FX pairs"],
+  },
+  {
+    id: "dxtrade",
+    name: "DXTrade",
+    kind: "prop",
+    envVars: ["DXTRADE_USERNAME", "DXTRADE_PASSWORD", "DXTRADE_BASE_URL"],
+    setup:
+      "DXTrade (Devexperts) — each prop firm runs its own deployment. Your API credentials: username, password, and the base URL of your broker's DXTrade instance (e.g. https://dx.velotrade.com/dxsca-web).",
+    capabilities: ["Account info", "Positions", "Market/Limit/Stop orders", "Partial close"],
+  },
+  {
+    id: "ctrader",
+    name: "cTrader",
+    kind: "broker",
+    envVars: ["CTRADER_CLIENT_ID", "CTRADER_CLIENT_SECRET", "CTRADER_ACCESS_TOKEN", "CTRADER_ACCOUNT_ID"],
+    setup:
+      "cTrader Open API uses OAuth2. Register an app on the cTrader Open API portal, authorize your account, then enter: access token → 'API key', clientId:clientSecret → 'API secret', account ID → 'Account ID'. Trading requires WebSocket — account probe only via REST.",
+    capabilities: ["Account info (REST probe)", "Trading via cTrader desktop/web"],
+  },
+  {
+    id: "ftmo",
+    name: "FTMO",
+    kind: "prop",
+    envVars: ["FTMO_LOGIN", "FTMO_SECRET", "FTMO_BACKEND (ctrader/dxtrade/mt4/mt5)"],
+    setup:
+      "FTMO has no proprietary API — it routes through cTrader, DXTrade, or MetaTrader. Select your backend (cTrader recommended), then enter your platform credentials. DXTrade REST was revoked Apr 2024.",
+    capabilities: ["Eval/funded account", "Trades via cTrader Open API", "Account probe"],
+  },
+  {
+    id: "matchtrade",
+    name: "Match-Trader",
+    kind: "broker",
+    envVars: ["MATCHTRADE_EMAIL", "MATCHTRADE_PASSWORD", "MATCHTRADE_BROKER_ID", "MATCHTRADE_BASE_URL"],
+    setup:
+      "Match-Trader REST API. Your API credentials: email → 'API key', password → 'API secret', base URL → 'AppKey / URL'. Broker ID goes in 'Notes'. Each broker deployment has its own host.",
+    capabilities: ["Account balance", "Positions", "Orders", "Partial close"],
+  },
+  {
     id: "schwab",
     name: "Charles Schwab",
     kind: "broker",
@@ -81,6 +126,23 @@ export function platformConfigured(id: string): boolean {
     case "forex":
       return Boolean(
         process.env.FOREX_USERNAME && process.env.FOREX_PASSWORD && process.env.FOREX_APP_KEY,
+      );
+    case "oanda":
+      return Boolean(process.env.OANDA_API_TOKEN && process.env.OANDA_ACCOUNT_ID);
+    case "dxtrade":
+      return Boolean(
+        process.env.DXTRADE_USERNAME && process.env.DXTRADE_PASSWORD && process.env.DXTRADE_BASE_URL,
+      );
+    case "ctrader":
+      return Boolean(
+        process.env.CTRADER_CLIENT_ID && process.env.CTRADER_ACCESS_TOKEN && process.env.CTRADER_ACCOUNT_ID,
+      );
+    case "ftmo":
+      return Boolean(process.env.FTMO_LOGIN && process.env.FTMO_SECRET);
+    case "matchtrade":
+      return Boolean(
+        process.env.MATCHTRADE_EMAIL && process.env.MATCHTRADE_PASSWORD &&
+        process.env.MATCHTRADE_BROKER_ID && process.env.MATCHTRADE_BASE_URL,
       );
     case "schwab":
       return Boolean(

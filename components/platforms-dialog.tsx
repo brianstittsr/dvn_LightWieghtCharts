@@ -30,6 +30,11 @@ const CRED_FIELDS: Record<
     accountId: "Account ID",
   },
   forex: { apiKey: "Username", apiSecret: "Password", appKey: "AppKey" },
+  oanda: { apiKey: "Personal access token", apiSecret: "Account ID" },
+  dxtrade: { apiKey: "Username", apiSecret: "Password", appKey: "Base URL" },
+  ctrader: { apiKey: "Access token", apiSecret: "clientId:clientSecret", accountId: "Account ID" },
+  ftmo: { apiKey: "Platform login", apiSecret: "Secret / clientId:clientSecret", appKey: "Backend (ctrader/mt4/mt5)" },
+  matchtrade: { apiKey: "Email", apiSecret: "Password", appKey: "Base URL" },
 };
 
 const INPUT =

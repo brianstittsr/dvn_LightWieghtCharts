@@ -79,6 +79,81 @@ async function statusOf(id: string, uid: string | null): Promise<Partial<Platfor
         },
       };
     }
+    case "oanda": {
+      const { oandaUserCreds, oandaAccountSummary } = await import("@/lib/platforms/oanda");
+      const creds = await oandaUserCreds(uid);
+      if (!creds) return { configured: false };
+      const summary = await oandaAccountSummary(creds);
+      return {
+        configured: true,
+        connected: true,
+        account: {
+          label: summary.account.alias ?? creds.accountId,
+          balance: Number(summary.account.NAV),
+          currency: summary.account.currency,
+        },
+      };
+    }
+    case "dxtrade": {
+      const { dxtradeUserCreds, dxtradeLogin, dxtradeAccounts } = await import("@/lib/platforms/dxtrade");
+      const creds = await dxtradeUserCreds(uid);
+      if (!creds) return { configured: false };
+      const session = await dxtradeLogin(creds);
+      const accounts = await dxtradeAccounts(creds, session);
+      const primary = accounts[0];
+      return {
+        configured: true,
+        connected: true,
+        account: primary
+          ? { label: primary.accountCode, currency: primary.currency ?? "USD" }
+          : { label: "DXTrade connected" },
+      };
+    }
+    case "ctrader": {
+      const { ctraderUserCreds, ctraderAccountInfo } = await import("@/lib/platforms/ctrader");
+      const creds = await ctraderUserCreds(uid);
+      if (!creds) return { configured: false };
+      const info = await ctraderAccountInfo(creds);
+      return {
+        configured: true,
+        connected: true,
+        account: {
+          label: info.brokerName ?? `cTrader ${info.ctidTraderAccountId}`,
+          balance: info.balance,
+          currency: info.currency ?? "USD",
+        },
+      };
+    }
+    case "ftmo": {
+      const { ftmoUserCreds, ftmoProbe } = await import("@/lib/platforms/ftmo");
+      const creds = await ftmoUserCreds(uid);
+      if (!creds) return { configured: false };
+      const probe = await ftmoProbe(creds);
+      return {
+        configured: true,
+        connected: probe.connected,
+        account: probe.balance != null
+          ? { label: `FTMO (${creds.backend})`, balance: probe.balance, currency: "USD" }
+          : undefined,
+        note: probe.note,
+      };
+    }
+    case "matchtrade": {
+      const { matchtradeUserCreds, matchtradeLogin, matchtradeBalance } = await import("@/lib/platforms/matchtrade");
+      const creds = await matchtradeUserCreds(uid);
+      if (!creds) return { configured: false };
+      const session = await matchtradeLogin(creds);
+      const balance = await matchtradeBalance(creds, session);
+      return {
+        configured: true,
+        connected: true,
+        account: {
+          label: balance.email ?? "Match-Trader",
+          balance: balance.equity ?? balance.balance,
+          currency: balance.currency ?? "USD",
+        },
+      };
+    }
     case "schwab":
       return { connected: false, note: "OAuth2 adapter not implemented yet" };
     case "ninjatrader":

@@ -65,7 +65,9 @@ export function FuturesTicket({
   const [bracket, setBracket] = useState(false);
   const [tpTicks, setTpTicks] = useState("20");
   const [slTicks, setSlTicks] = useState("10");
+  const [rrRatio, setRrRatio] = useState("2");
   const [showBracketCfg, setShowBracketCfg] = useState(false);
+  const [partialQty, setPartialQty] = useState(1);
   const [last, setLast] = useState<number | null>(null);
   const [positions, setPositions] = useState<FutPosition[]>([]);
   const [busy, setBusy] = useState("");
@@ -386,7 +388,7 @@ export function FuturesTicket({
               </button>
             </div>
 
-            {/* Bracket */}
+            {/* Bracket + R:R */}
             <div className="mb-3 flex items-end gap-2">
               <div className="flex-1">
                 <label className={lbl} htmlFor="fx-bracket">Position Bracket</label>
@@ -409,27 +411,53 @@ export function FuturesTicket({
               </button>
             </div>
             {showBracketCfg && (
-              <div className="mb-3 grid grid-cols-2 gap-2 rounded border border-[#2a2e39] p-2">
-                <label className="text-[11px] text-gray-400">
-                  TP ticks
-                  <input
-                    type="number"
-                    min={1}
-                    value={tpTicks}
-                    onChange={(e) => setTpTicks(e.target.value)}
-                    className={cn(sel, "mt-1")}
-                  />
-                </label>
-                <label className="text-[11px] text-gray-400">
-                  SL ticks
-                  <input
-                    type="number"
-                    min={1}
-                    value={slTicks}
-                    onChange={(e) => setSlTicks(e.target.value)}
-                    className={cn(sel, "mt-1")}
-                  />
-                </label>
+              <div className="mb-3 rounded border border-[#2a2e39] p-2">
+                <div className="grid grid-cols-3 gap-2">
+                  <label className="text-[11px] text-gray-400">
+                    SL ticks
+                    <input
+                      type="number"
+                      min={1}
+                      value={slTicks}
+                      onChange={(e) => {
+                        setSlTicks(e.target.value);
+                        if (Number(rrRatio) > 0 && Number(e.target.value) > 0) {
+                          setTpTicks(String(Math.round(Number(e.target.value) * Number(rrRatio))));
+                        }
+                      }}
+                      className={cn(sel, "mt-1")}
+                    />
+                  </label>
+                  <label className="text-[11px] text-gray-400">
+                    R:R
+                    <input
+                      type="number"
+                      min={0.1}
+                      step={0.1}
+                      value={rrRatio}
+                      onChange={(e) => {
+                        setRrRatio(e.target.value);
+                        if (Number(e.target.value) > 0 && Number(slTicks) > 0) {
+                          setTpTicks(String(Math.round(Number(slTicks) * Number(e.target.value))));
+                        }
+                      }}
+                      className={cn(sel, "mt-1")}
+                    />
+                  </label>
+                  <label className="text-[11px] text-gray-400">
+                    TP ticks
+                    <input
+                      type="number"
+                      min={1}
+                      value={tpTicks}
+                      onChange={(e) => setTpTicks(e.target.value)}
+                      className={cn(sel, "mt-1")}
+                    />
+                  </label>
+                </div>
+                <p className="mt-1 text-[10px] text-gray-600">
+                  Set R:R to auto-calculate TP from SL (e.g. SL=10, R:R=2 → TP=20)
+                </p>
               </div>
             )}
 
@@ -445,15 +473,17 @@ export function FuturesTicket({
                 disabled={Boolean(busy) || !contractId}
                 onClick={() => place("buy")}
                 className={cn(btn, "bg-[#1e7a3c] py-3 hover:bg-[#259a4b]")}
+                title="Go Long — buy"
               >
-                BUY +{qty} @ {TYPE_LABEL[orderType]}
+                GO LONG +{qty} @ {TYPE_LABEL[orderType]}
               </button>
               <button
                 disabled={Boolean(busy) || !contractId}
                 onClick={() => place("sell")}
                 className={cn(btn, "bg-[#a8323c] py-3 hover:bg-[#c43d49]")}
+                title="Go Short — sell"
               >
-                SELL −{qty} @ {TYPE_LABEL[orderType]}
+                GO SHORT −{qty} @ {TYPE_LABEL[orderType]}
               </button>
               <button
                 disabled={Boolean(busy) || !contractId}
@@ -476,6 +506,29 @@ export function FuturesTicket({
               >
                 CLOSE POSITION
               </button>
+              <div className="col-span-2 flex items-center gap-1">
+                <input
+                  type="number"
+                  min={1}
+                  max={position?.size ?? 500}
+                  value={partialQty}
+                  onChange={(e) => setPartialQty(Math.max(1, +e.target.value || 1))}
+                  className="w-14 rounded border border-[#2a2e39] bg-[#0b0e11] px-2 py-1.5 text-center text-xs text-gray-200 outline-none"
+                  aria-label="Partial close quantity"
+                />
+                <button
+                  disabled={Boolean(busy) || !position}
+                  onClick={() =>
+                    send(
+                      { action: "partialClose", contractId, closeQty: partialQty },
+                      `Partial close ${partialQty}`,
+                    )
+                  }
+                  className={cn(btn, danger, "flex-1")}
+                >
+                  PARTIAL CLOSE {partialQty}
+                </button>
+              </div>
               <button
                 disabled={Boolean(busy) || !position}
                 onClick={() => send({ action: "reverse", contractId }, "Reverse")}

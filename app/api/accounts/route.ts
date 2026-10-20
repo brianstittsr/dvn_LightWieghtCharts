@@ -18,7 +18,7 @@ export const dynamic = "force-dynamic";
  *   forex         apiKey=username         apiSecret=password          appKey=AppKey
  */
 const saveSchema = z.object({
-  platform: z.enum(["alpaca", "topstep", "apex", "forex"]),
+  platform: z.enum(["alpaca", "topstep", "apex", "forex", "oanda", "dxtrade", "ctrader", "ftmo", "matchtrade"]),
   name: z.string().trim().max(60).optional(),
   accountId: z.number().int().positive().nullish(),
   apiKey: z.string().trim().max(200).optional(),
@@ -32,6 +32,11 @@ const PLATFORM_LABEL: Record<string, string> = {
   topstep: "TopStep",
   apex: "Apex",
   forex: "FOREX.com",
+  oanda: "OANDA",
+  dxtrade: "DXTrade",
+  ctrader: "cTrader",
+  ftmo: "FTMO",
+  matchtrade: "Match-Trader",
 };
 
 async function myAccounts(uid: string): Promise<TradingAccount[]> {

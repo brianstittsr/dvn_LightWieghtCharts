@@ -2,6 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { alpaca, alpacaConfigured, AlpacaError } from "@/lib/alpaca";
 
+const tpSchema = z.union([
+  z.number().positive(),
+  z.object({ limit_price: z.number().positive() }),
+]);
+const slSchema = z.union([
+  z.number().positive(),
+  z.object({ stop_price: z.number().positive() }),
+]);
 const orderSchema = z.object({
   symbol: z.string().min(1).max(30),
   qty: z.number().positive(),
@@ -9,8 +17,8 @@ const orderSchema = z.object({
   type: z.enum(["market", "limit"]).default("market"),
   limit_price: z.number().positive().optional(),
   time_in_force: z.enum(["day", "gtc", "ioc"]).optional(),
-  take_profit: z.number().positive().optional(), // bracket TP limit price
-  stop_loss: z.number().positive().optional(), // bracket SL stop price
+  take_profit: tpSchema.optional(),
+  stop_loss: slSchema.optional(),
 });
 
 export async function GET() {
@@ -34,13 +42,18 @@ export async function POST(req: NextRequest) {
   if (!parsed.success) {
     return NextResponse.json({ error: "Invalid order: symbol, qty>0 and side buy|sell required" }, { status: 400 });
   }
-  const { symbol, qty, side, type, limit_price, take_profit, stop_loss } = parsed.data;
+  const { symbol, qty, side, type, limit_price } = parsed.data;
+  const rawTp = parsed.data.take_profit;
+  const rawSl = parsed.data.stop_loss;
+  // Normalize to number regardless of shape
+  const tpPrice = rawTp == null ? undefined : typeof rawTp === "number" ? rawTp : rawTp.limit_price;
+  const slPrice = rawSl == null ? undefined : typeof rawSl === "number" ? rawSl : rawSl.stop_price;
   const isCrypto = symbol.includes("/");
   const tif = parsed.data.time_in_force ?? (isCrypto ? "gtc" : "day");
   if (type === "limit" && limit_price == null) {
     return NextResponse.json({ error: "limit_price required for limit orders" }, { status: 400 });
   }
-  const bracket = take_profit != null || stop_loss != null;
+  const bracket = tpPrice != null || slPrice != null;
   if (bracket && isCrypto) {
     return NextResponse.json({ error: "Bracket orders (TP/SL) are not supported for crypto" }, { status: 400 });
   }
@@ -58,8 +71,8 @@ export async function POST(req: NextRequest) {
         ...(bracket
           ? {
               order_class: "bracket",
-              ...(take_profit != null ? { take_profit: { limit_price: String(take_profit) } } : {}),
-              ...(stop_loss != null ? { stop_loss: { stop_price: String(stop_loss) } } : {}),
+              ...(tpPrice != null ? { take_profit: { limit_price: String(tpPrice) } } : {}),
+              ...(slPrice != null ? { stop_loss: { stop_price: String(slPrice) } } : {}),
             }
           : {}),
       }),
