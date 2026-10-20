@@ -25,6 +25,13 @@ export interface SimFill {
   multiplier: number;
 }
 
+/** A bracket (OCO) order attached to a position. */
+export interface SimBracketOrder {
+  positionSymbol: string;
+  tp: number | null;
+  sl: number | null;
+}
+
 /** An open position in the sim account. */
 export interface SimPosition {
   symbol: string;
@@ -33,6 +40,51 @@ export interface SimPosition {
   avgEntry: number;
   assetClass: "stock" | "future" | "forex";
   multiplier: number;
+  /** Attached bracket (TP/SL). Null means no bracket. */
+  bracket?: SimBracketOrder | null;
+}
+
+/** A completed round-trip trade for journal/analytics. */
+export interface SimRoundTrip {
+  id: string;
+  symbol: string;
+  side: "long" | "short";
+  entryPrice: number;
+  exitPrice: number;
+  qty: number;
+  entryTime: number;
+  exitTime: number;
+  realized: number;
+  /** Risk:reward achieved (SL distance / actual move). */
+  rr?: number;
+  assetClass: "stock" | "future" | "forex";
+  multiplier: number;
+  /** User journal note. */
+  note?: string;
+  /** Comma-separated setup tags. */
+  tags?: string;
+}
+
+/** Performance analytics computed from round-trip trades. */
+export interface SimPerformance {
+  totalTrades: number;
+  wins: number;
+  losses: number;
+  breakeven: number;
+  winRate: number;
+  avgWin: number;
+  avgLoss: number;
+  profitFactor: number;
+  expectancy: number;
+  avgRR: number;
+  largestWin: number;
+  largestLoss: number;
+  maxConsecWins: number;
+  maxConsecLosses: number;
+  currentStreak: number; // positive = wins, negative = losses
+  byHour: Record<number, { pnl: number; trades: number }>;
+  byDayOfWeek: Record<number, { pnl: number; trades: number }>;
+  equityCurve: { time: number; balance: number }[];
 }
 
 /** Daily P&L bucket — same shape as DayPnl for calendar reuse. */
@@ -678,5 +730,292 @@ export function simChallengeMetrics(
       minDays: daysRule,
       consistency: consistencyRule,
     },
+  };
+}
+
+// ── Bracket Orders (OCO) ─────────────────────────────────────────
+
+/** Attach a bracket (TP/SL) to the current position for a symbol. */
+export function simSetBracket(
+  state: SimAccountState,
+  symbol: string,
+  tp: number | null,
+  sl: number | null,
+): SimAccountState {
+  const newState: SimAccountState = {
+    ...state,
+    positions: state.positions.map((p) =>
+      p.symbol === symbol
+        ? { ...p, bracket: { positionSymbol: symbol, tp, sl } }
+        : p,
+    ),
+  };
+  saveSimAccount(newState);
+  return newState;
+}
+
+/**
+ * Check bracket orders against a bar's high/low/close.
+ * Returns updated state + any fills triggered.
+ * Checks SL first (worst case), then TP.
+ */
+export function simCheckBrackets(
+  state: SimAccountState,
+  bar: { high: number; low: number; close: number; time: number },
+  symbol: string,
+): { state: SimAccountState; triggered: SimFill[] } {
+  const triggered: SimFill[] = [];
+  let s = state;
+
+  const pos = s.positions.find((p) => p.symbol === symbol && p.bracket);
+  if (!pos || !pos.bracket) return { state: s, triggered };
+
+  const { tp, sl } = pos.bracket;
+
+  // Check SL first (price goes against us)
+  if (sl != null) {
+    const slHit = pos.side === "long" ? bar.low <= sl : bar.high >= sl;
+    if (slHit) {
+      const result = simClosePosition(
+        s, symbol, pos.qty, sl, bar.time, pos.assetClass, pos.multiplier,
+      );
+      s = result.state;
+      triggered.push(result.fill);
+      return { state: s, triggered };
+    }
+  }
+
+  // Check TP
+  if (tp != null) {
+    const tpHit = pos.side === "long" ? bar.high >= tp : bar.low <= tp;
+    if (tpHit) {
+      const result = simClosePosition(
+        s, symbol, pos.qty, tp, bar.time, pos.assetClass, pos.multiplier,
+      );
+      s = result.state;
+      triggered.push(result.fill);
+      return { state: s, triggered };
+    }
+  }
+
+  return { state: s, triggered };
+}
+
+// ── Risk-Based Position Sizing ───────────────────────────────────
+
+/**
+ * Calculate position qty based on account risk % and stop distance.
+ * @param balance Current account balance
+ * @param riskPct Risk percentage (e.g. 1 = 1% of balance)
+ * @param stopDistance Absolute price distance from entry to stop
+ * @param multiplier $ per point (futures: tick value, stocks: 1)
+ * @param maxQty Optional hard cap on qty
+ */
+export function calcRiskQty(
+  balance: number,
+  riskPct: number,
+  stopDistance: number,
+  multiplier = 1,
+  maxQty?: number,
+): number {
+  if (stopDistance <= 0 || riskPct <= 0) return 1;
+  const riskAmount = balance * (riskPct / 100);
+  const raw = riskAmount / (stopDistance * multiplier);
+  const qty = Math.max(1, Math.floor(raw));
+  return maxQty != null ? Math.min(qty, maxQty) : qty;
+}
+
+// ── Round-Trip Trade Extraction ──────────────────────────────────
+
+const JOURNAL_KEY = "sim-journal";
+
+/** Extract round-trip trades from fills (pair opens with closes). */
+export function extractRoundTrips(state: SimAccountState): SimRoundTrip[] {
+  // Load existing journal notes
+  const notes = loadJournalNotes();
+
+  const trips: SimRoundTrip[] = [];
+  // Track open lots: { price, qty, time }[]
+  const openLots: Map<string, { price: number; qty: number; time: number; side: "long" | "short" }[]> = new Map();
+
+  for (const fill of state.fills) {
+    const key = fill.symbol;
+    const posSide = fill.side === "buy" ? "long" : "short";
+
+    if (fill.closedQty > 0 && fill.realized !== 0) {
+      // This is a closing fill — match with open lots
+      const lots = openLots.get(key) ?? [];
+      let remaining = fill.closedQty;
+
+      while (remaining > 0 && lots.length > 0) {
+        const lot = lots[0];
+        const matched = Math.min(remaining, lot.qty);
+        const entryPrice = lot.price;
+        const tripId = fill.id + "-" + matched;
+        const journal = notes[tripId] ?? notes[fill.id];
+
+        trips.push({
+          id: tripId,
+          symbol: fill.symbol,
+          side: lot.side,
+          entryPrice,
+          exitPrice: fill.price,
+          qty: matched,
+          entryTime: lot.time,
+          exitTime: fill.time,
+          realized: fill.realized * (matched / fill.closedQty),
+          assetClass: fill.assetClass,
+          multiplier: fill.multiplier,
+          note: journal?.note,
+          tags: journal?.tags,
+        });
+
+        remaining -= matched;
+        lot.qty -= matched;
+        if (lot.qty <= 0) lots.shift();
+      }
+
+      openLots.set(key, lots);
+    } else if (fill.closedQty === 0) {
+      // Opening fill — add to lots
+      const lots = openLots.get(key) ?? [];
+      lots.push({ price: fill.price, qty: fill.qty, time: fill.time, side: posSide });
+      openLots.set(key, lots);
+    }
+  }
+
+  return trips;
+}
+
+// ── Trade Journal ────────────────────────────────────────────────
+
+interface JournalEntry {
+  note: string;
+  tags: string;
+}
+
+function loadJournalNotes(): Record<string, JournalEntry> {
+  try {
+    const raw = localStorage.getItem(JOURNAL_KEY);
+    if (!raw) return {};
+    return JSON.parse(raw) as Record<string, JournalEntry>;
+  } catch {
+    return {};
+  }
+}
+
+export function saveJournalNote(tradeId: string, note: string, tags: string): void {
+  const notes = loadJournalNotes();
+  notes[tradeId] = { note, tags };
+  localStorage.setItem(JOURNAL_KEY, JSON.stringify(notes));
+}
+
+export function loadJournalNote(tradeId: string): JournalEntry | null {
+  return loadJournalNotes()[tradeId] ?? null;
+}
+
+// ── Performance Analytics ────────────────────────────────────────
+
+export function simPerformance(state: SimAccountState): SimPerformance {
+  const trips = extractRoundTrips(state);
+  const totalTrades = trips.length;
+
+  const wins = trips.filter((t) => t.realized > 0).length;
+  const losses = trips.filter((t) => t.realized < 0).length;
+  const breakeven = trips.filter((t) => t.realized === 0).length;
+  const winRate = totalTrades > 0 ? (wins / totalTrades) * 100 : 0;
+
+  const winAmounts = trips.filter((t) => t.realized > 0).map((t) => t.realized);
+  const lossAmounts = trips.filter((t) => t.realized < 0).map((t) => t.realized);
+
+  const avgWin = winAmounts.length > 0 ? winAmounts.reduce((s, v) => s + v, 0) / winAmounts.length : 0;
+  const avgLoss = lossAmounts.length > 0 ? Math.abs(lossAmounts.reduce((s, v) => s + v, 0) / lossAmounts.length) : 0;
+
+  const grossWins = winAmounts.reduce((s, v) => s + v, 0);
+  const grossLosses = Math.abs(lossAmounts.reduce((s, v) => s + v, 0));
+  const profitFactor = grossLosses > 0 ? grossWins / grossLosses : grossWins > 0 ? Infinity : 0;
+
+  const expectancy = totalTrades > 0
+    ? (winRate / 100) * avgWin - ((100 - winRate) / 100) * avgLoss
+    : 0;
+
+  // Average R:R achieved
+  const rrs = trips.map((t) => {
+    if (t.realized <= 0 || avgLoss === 0) return 0;
+    return t.realized / avgLoss;
+  });
+  const avgRR = rrs.length > 0 ? rrs.reduce((s, v) => s + v, 0) / rrs.length : 0;
+
+  const largestWin = winAmounts.length > 0 ? Math.max(...winAmounts) : 0;
+  const largestLoss = lossAmounts.length > 0 ? Math.min(...lossAmounts) : 0;
+
+  // Consecutive wins/losses
+  let maxConsecWins = 0;
+  let maxConsecLosses = 0;
+  let curWins = 0;
+  let curLosses = 0;
+  for (const t of trips) {
+    if (t.realized > 0) {
+      curWins++;
+      curLosses = 0;
+      maxConsecWins = Math.max(maxConsecWins, curWins);
+    } else if (t.realized < 0) {
+      curLosses++;
+      curWins = 0;
+      maxConsecLosses = Math.max(maxConsecLosses, curLosses);
+    } else {
+      curWins = 0;
+      curLosses = 0;
+    }
+  }
+  const currentStreak = curWins > 0 ? curWins : -curLosses;
+
+  // P&L by hour of day (ET)
+  const byHour: Record<number, { pnl: number; trades: number }> = {};
+  const byDayOfWeek: Record<number, { pnl: number; trades: number }> = {};
+  for (const t of trips) {
+    const d = new Date(t.exitTime * 1000);
+    // Convert to ET
+    const etStr = d.toLocaleString("en-US", { timeZone: "America/New_York" });
+    const etDate = new Date(etStr);
+    const hour = etDate.getHours();
+    const dow = etDate.getDay();
+
+    if (!byHour[hour]) byHour[hour] = { pnl: 0, trades: 0 };
+    byHour[hour].pnl += t.realized;
+    byHour[hour].trades++;
+
+    if (!byDayOfWeek[dow]) byDayOfWeek[dow] = { pnl: 0, trades: 0 };
+    byDayOfWeek[dow].pnl += t.realized;
+    byDayOfWeek[dow].trades++;
+  }
+
+  // Equity curve
+  let bal = state.startBalance;
+  const equityCurve: { time: number; balance: number }[] = [{ time: 0, balance: bal }];
+  for (const t of trips) {
+    bal += t.realized;
+    equityCurve.push({ time: t.exitTime, balance: bal });
+  }
+
+  return {
+    totalTrades,
+    wins,
+    losses,
+    breakeven,
+    winRate,
+    avgWin,
+    avgLoss,
+    profitFactor,
+    expectancy,
+    avgRR,
+    largestWin,
+    largestLoss,
+    maxConsecWins,
+    maxConsecLosses,
+    currentStreak,
+    byHour,
+    byDayOfWeek,
+    equityCurve,
   };
 }

@@ -43,6 +43,8 @@ import {
   simClosePosition,
   simFlatten,
   simChallengeMetrics,
+  simSetBracket,
+  simCheckBrackets,
   loadCopyGroup,
   createCopyGroup,
   copyTradeOpen,
@@ -52,6 +54,7 @@ import {
   type SimAccountState,
   type CopyTradeGroup,
 } from "@/lib/sim-account";
+import { SimPerformanceDialog } from "@/components/sim-performance";
 import { JevDashboard } from "@/components/jev-dashboard";
 import type { JevRun } from "@/lib/jev/engine";
 import type { BacktestResult } from "@/lib/backtest";
@@ -262,14 +265,21 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
     if (typeof window === "undefined") return null;
     return loadSimAccount();
   });
+  const simAccountRef = useRef<SimAccountState | null>(null);
   const [copyGroup, setCopyGroup] = useState<CopyTradeGroup | null>(() => {
     if (typeof window === "undefined") return null;
     return loadCopyGroup();
   });
   const [practiceSetup, setPracticeSetup] = useState(false);
   const [simCalendarOpen, setSimCalendarOpen] = useState(false);
+  const [simAnalyticsOpen, setSimAnalyticsOpen] = useState(false);
   /** True when we're in "practice mode" — sim trades active during replay. */
   const [practiceMode, setPracticeMode] = useState(false);
+
+  // Keep simAccountRef in sync so stepReplay can check brackets without dep issues
+  useEffect(() => {
+    simAccountRef.current = simAccount;
+  }, [simAccount]);
 
   // Load persisted indicator instances + AI indicators after mount.
   useEffect(() => {
@@ -496,8 +506,31 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
     setReplayTime(bar.time);
     checkTpSlLevels(bar, prev, true);
     updateIndicatorsTick();
+
+    // Check sim bracket orders (TP/SL) on each bar
+    const sa = simAccountRef.current;
+    if (sa) {
+      const pos = sa.positions.find((p) => p.bracket);
+      if (pos?.bracket) {
+        const { state: newState, triggered } = simCheckBrackets(sa, bar, pos.symbol);
+        if (triggered.length > 0) {
+          setSimAccount(newState);
+          const fill = triggered[0];
+          setTpslResult({
+            symbol: fill.symbol,
+            kind: fill.realized > 0 ? "tp" : "sl",
+            side: fill.side === "buy" ? "short" : "long",
+            qty: fill.closedQty,
+            entry: pos.avgEntry,
+            exit: fill.price,
+            pnl: fill.realized,
+          });
+        }
+      }
+    }
+
     return true;
-  }, [checkTpSlLevels, updateIndicatorsTick]);
+  }, [checkTpSlLevels, updateIndicatorsTick, setSimAccount, setTpslResult]);
 
   /** Exit replay: drop the truncated view and refetch live data. */
   const exitReplay = useCallback(() => {
@@ -587,43 +620,54 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
     exitReplay();
   }, [exitReplay]);
 
-  // Sim trade handlers for practice mode (supports single + copy-trade)
+  // Sim trade handlers for practice mode (supports single + copy-trade + brackets)
   const simGoLong = useCallback(
-    (qty: number) => {
+    (qty: number, tp?: number, sl?: number) => {
       if (!simAccount || price == null) return;
       const info = symbolInfo(symbol);
       const assetClass = info.source === "futures" ? "future" : info.source === "alpaca" ? "stock" : "forex";
       const multiplier = assetClass === "future" ? 50 : 1; // ES/NQ=$50/pt, stocks=$1
       const time = replayTime ?? Math.floor(Date.now() / 1000);
 
+      let newState: SimAccountState;
       if (copyGroup) {
         const updated = copyTradeOpen(copyGroup, symbol, "buy", qty, price, time, assetClass, multiplier);
         setCopyGroup(updated);
-        setSimAccount(updated.master);
+        newState = updated.master;
       } else {
         const result = simOpenPosition(simAccount, symbol, "buy", qty, price, time, assetClass, multiplier);
-        setSimAccount(result.state);
+        newState = result.state;
       }
+      // Attach bracket order if provided
+      if (tp != null || sl != null) {
+        newState = simSetBracket(newState, symbol, tp ?? null, sl ?? null);
+      }
+      setSimAccount(newState);
     },
     [simAccount, price, symbol, replayTime, copyGroup],
   );
 
   const simGoShort = useCallback(
-    (qty: number) => {
+    (qty: number, tp?: number, sl?: number) => {
       if (!simAccount || price == null) return;
       const info = symbolInfo(symbol);
       const assetClass = info.source === "futures" ? "future" : info.source === "alpaca" ? "stock" : "forex";
       const multiplier = assetClass === "future" ? 50 : 1;
       const time = replayTime ?? Math.floor(Date.now() / 1000);
 
+      let newState: SimAccountState;
       if (copyGroup) {
         const updated = copyTradeOpen(copyGroup, symbol, "sell", qty, price, time, assetClass, multiplier);
         setCopyGroup(updated);
-        setSimAccount(updated.master);
+        newState = updated.master;
       } else {
         const result = simOpenPosition(simAccount, symbol, "sell", qty, price, time, assetClass, multiplier);
-        setSimAccount(result.state);
+        newState = result.state;
       }
+      if (tp != null || sl != null) {
+        newState = simSetBracket(newState, symbol, tp ?? null, sl ?? null);
+      }
+      setSimAccount(newState);
     },
     [simAccount, price, symbol, replayTime, copyGroup],
   );
@@ -1136,13 +1180,22 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
           Practice
         </button>
         {simAccount && (
-          <button
-            onClick={() => setSimCalendarOpen(true)}
-            title="Sim P&L Calendar — view your practice trading results"
-            className="rounded bg-neutral-800 px-1.5 py-1 text-[10px] font-medium text-neutral-300 hover:bg-neutral-700 hover:text-neutral-100"
-          >
-            Sim P&L
-          </button>
+          <>
+            <button
+              onClick={() => setSimCalendarOpen(true)}
+              title="Sim P&L Calendar — view your practice trading results"
+              className="rounded bg-neutral-800 px-1.5 py-1 text-[10px] font-medium text-neutral-300 hover:bg-neutral-700 hover:text-neutral-100"
+            >
+              Sim P&L
+            </button>
+            <button
+              onClick={() => setSimAnalyticsOpen(true)}
+              title="Performance Analytics — win rate, expectancy, equity curve, journal"
+              className="rounded bg-neutral-800 px-1.5 py-1 text-[10px] font-medium text-neutral-300 hover:bg-neutral-700 hover:text-neutral-100"
+            >
+              Analytics
+            </button>
+          </>
         )}
         <TickerBar label={symbolInfo(symbol).value} price={price} dayOpen={dayOpen} />
         {posBadge && (
@@ -1296,6 +1349,7 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
             onFlatten={simFlattenAll}
             challengeMetrics={simAccount.challenge ? simChallengeMetrics(simAccount) : null}
             copyGroup={copyGroup}
+            onOpenAnalytics={() => setSimAnalyticsOpen(true)}
           />
         )}
         {error && (
@@ -1349,6 +1403,13 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
           simAccount={simAccount}
           onReset={handleResetSim}
           copyGroup={copyGroup}
+        />
+      )}
+      {simAccount && (
+        <SimPerformanceDialog
+          open={simAnalyticsOpen}
+          onClose={() => setSimAnalyticsOpen(false)}
+          simAccount={simAccount}
         />
       )}
     </div>

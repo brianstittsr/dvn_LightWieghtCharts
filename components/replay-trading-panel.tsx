@@ -8,20 +8,20 @@ import type {
   ChallengeMetrics,
   CopyTradeGroup,
 } from "@/lib/sim-account";
-import { allCopyAccounts, copyGroupTotalPnl, simChallengeMetrics } from "@/lib/sim-account";
+import { allCopyAccounts, copyGroupTotalPnl, simChallengeMetrics, calcRiskQty } from "@/lib/sim-account";
 
 interface ReplayTradingPanelProps {
   simAccount: SimAccountState | null;
   currentPrice: number | null;
   symbol: string;
   assetClass: "stock" | "future" | "forex";
-  onGoLong: (qty: number) => void;
-  onGoShort: (qty: number) => void;
+  onGoLong: (qty: number, tp?: number, sl?: number) => void;
+  onGoShort: (qty: number, tp?: number, sl?: number) => void;
   onPartialClose: (qty: number) => void;
   onFlatten: () => void;
   challengeMetrics: ChallengeMetrics | null;
-  /** Copy-trade group, if multi-account mode is active. */
   copyGroup: CopyTradeGroup | null;
+  onOpenAnalytics?: () => void;
 }
 
 function usd(n: number): string {
@@ -40,10 +40,21 @@ export function ReplayTradingPanel({
   onFlatten,
   challengeMetrics,
   copyGroup,
+  onOpenAnalytics,
 }: ReplayTradingPanelProps) {
   const [qty, setQty] = useState(1);
   const [partialQty, setPartialQty] = useState(1);
   const [expanded, setExpanded] = useState(true);
+
+  // Bracket order state
+  const [useBracket, setUseBracket] = useState(false);
+  const [tpDistance, setTpDistance] = useState("");
+  const [slDistance, setSlDistance] = useState("");
+
+  // Risk-based sizing state
+  const [useRiskSizing, setUseRiskSizing] = useState(false);
+  const [riskPct, setRiskPct] = useState("1");
+  const [maxQty, setMaxQty] = useState("");
 
   const position: SimPosition | null =
     simAccount?.positions.find((p) => p.symbol === symbol) ?? null;
@@ -55,13 +66,28 @@ export function ReplayTradingPanel({
     uPnl = (currentPrice - position.avgEntry) * position.qty * dir * position.multiplier;
   }
 
+  // Risk-based qty calculation
+  const multiplier = assetClass === "future" ? 50 : 1;
+  const slDist = Number(slDistance) || 0;
+  const riskQty = useRiskSizing && simAccount && slDist > 0
+    ? calcRiskQty(simAccount.balance, Number(riskPct) || 1, slDist, multiplier, maxQty ? Number(maxQty) : undefined)
+    : qty;
+  const effectiveQty = useRiskSizing ? riskQty : qty;
+  const riskAmount = simAccount ? simAccount.balance * ((Number(riskPct) || 1) / 100) : 0;
+
   const handleGoLong = useCallback(() => {
-    if (qty > 0) onGoLong(qty);
-  }, [qty, onGoLong]);
+    if (effectiveQty <= 0 || currentPrice == null) return;
+    const tp = useBracket && tpDistance ? currentPrice + Number(tpDistance) : undefined;
+    const sl = useBracket && slDistance ? currentPrice - Number(slDistance) : undefined;
+    onGoLong(effectiveQty, tp, sl);
+  }, [effectiveQty, onGoLong, useBracket, tpDistance, slDistance, currentPrice]);
 
   const handleGoShort = useCallback(() => {
-    if (qty > 0) onGoShort(qty);
-  }, [qty, onGoShort]);
+    if (effectiveQty <= 0 || currentPrice == null) return;
+    const tp = useBracket && tpDistance ? currentPrice - Number(tpDistance) : undefined;
+    const sl = useBracket && slDistance ? currentPrice + Number(slDistance) : undefined;
+    onGoShort(effectiveQty, tp, sl);
+  }, [effectiveQty, onGoShort, useBracket, tpDistance, slDistance, currentPrice]);
 
   // Futures qty presets
   const qtyPresets = assetClass === "future" ? [1, 2, 3, 5, 10] : [1, 10, 50, 100, 500];
@@ -149,29 +175,135 @@ export function ReplayTradingPanel({
             </div>
           )}
 
-          {/* Qty input + presets */}
-          <div className="mb-2 flex items-center gap-1">
-            {qtyPresets.map((n) => (
-              <button
-                key={n}
-                onClick={() => setQty(n)}
-                className={cn(
-                  "h-6 rounded px-1.5 text-[10px] font-semibold",
-                  qty === n ? "bg-blue-700 text-white" : "bg-[#2a3040] text-neutral-400 hover:text-white",
-                )}
-              >
-                {n}
-              </button>
-            ))}
+          {/* Risk-based sizing toggle */}
+          <div className="mb-1.5 flex items-center gap-1.5">
             <input
-              type="number"
-              min={1}
-              value={qty}
-              onChange={(e) => setQty(Math.max(1, +e.target.value || 1))}
-              className="ml-1 w-12 rounded border border-[#2a3040] bg-[#0b0e11] px-1 py-0.5 text-center text-[10px] text-neutral-200 outline-none"
-              aria-label="Order qty"
+              type="checkbox"
+              id="rtp-risk"
+              checked={useRiskSizing}
+              onChange={(e) => setUseRiskSizing(e.target.checked)}
+              className="accent-amber-500"
             />
+            <label htmlFor="rtp-risk" className="text-[10px] text-neutral-400">
+              Risk-based sizing
+            </label>
           </div>
+
+          {useRiskSizing && (
+            <div className="mb-2 grid grid-cols-3 gap-1 text-[10px]">
+              <div>
+                <span className="text-neutral-500">Risk %</span>
+                <input
+                  type="number"
+                  min={0.1}
+                  step={0.1}
+                  value={riskPct}
+                  onChange={(e) => setRiskPct(e.target.value)}
+                  className="mt-0.5 w-full rounded border border-[#2a3040] bg-[#0b0e11] px-1 py-0.5 text-center text-neutral-200 outline-none"
+                />
+              </div>
+              <div>
+                <span className="text-neutral-500">SL dist</span>
+                <input
+                  type="number"
+                  min={0}
+                  step={0.01}
+                  value={slDistance}
+                  onChange={(e) => setSlDistance(e.target.value)}
+                  placeholder="pts"
+                  className="mt-0.5 w-full rounded border border-[#2a3040] bg-[#0b0e11] px-1 py-0.5 text-center text-neutral-200 outline-none"
+                />
+              </div>
+              <div>
+                <span className="text-neutral-500">Max qty</span>
+                <input
+                  type="number"
+                  min={1}
+                  value={maxQty}
+                  onChange={(e) => setMaxQty(e.target.value)}
+                  placeholder="∞"
+                  className="mt-0.5 w-full rounded border border-[#2a3040] bg-[#0b0e11] px-1 py-0.5 text-center text-neutral-200 outline-none"
+                />
+              </div>
+              <div className="col-span-3 text-[9px] text-neutral-600">
+                Risk {usd(riskAmount)} → {riskQty} qty
+              </div>
+            </div>
+          )}
+
+          {/* Bracket order (OCO) */}
+          <div className="mb-1.5 flex items-center gap-1.5">
+            <input
+              type="checkbox"
+              id="rtp-bracket"
+              checked={useBracket}
+              onChange={(e) => setUseBracket(e.target.checked)}
+              className="accent-blue-500"
+            />
+            <label htmlFor="rtp-bracket" className="text-[10px] text-neutral-400">
+              Bracket (TP/SL)
+            </label>
+          </div>
+
+          {useBracket && (
+            <div className="mb-2 grid grid-cols-2 gap-1 text-[10px]">
+              <div>
+                <span className="text-green-500">TP distance</span>
+                <input
+                  type="number"
+                  min={0}
+                  step={0.01}
+                  value={tpDistance}
+                  onChange={(e) => setTpDistance(e.target.value)}
+                  placeholder="pts"
+                  className="mt-0.5 w-full rounded border border-[#2a3040] bg-[#0b0e11] px-1 py-0.5 text-center text-neutral-200 outline-none"
+                />
+              </div>
+              <div>
+                <span className="text-red-500">SL distance</span>
+                <input
+                  type="number"
+                  min={0}
+                  step={0.01}
+                  value={slDistance}
+                  onChange={(e) => setSlDistance(e.target.value)}
+                  placeholder="pts"
+                  className="mt-0.5 w-full rounded border border-[#2a3040] bg-[#0b0e11] px-1 py-0.5 text-center text-neutral-200 outline-none"
+                />
+              </div>
+              {Number(tpDistance) > 0 && Number(slDistance) > 0 && (
+                <div className="col-span-2 text-[9px] text-neutral-600">
+                  R:R = {(Number(tpDistance) / Number(slDistance)).toFixed(2)}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Qty input + presets */}
+          {!useRiskSizing && (
+            <div className="mb-2 flex items-center gap-1">
+              {qtyPresets.map((n) => (
+                <button
+                  key={n}
+                  onClick={() => setQty(n)}
+                  className={cn(
+                    "h-6 rounded px-1.5 text-[10px] font-semibold",
+                    qty === n ? "bg-blue-700 text-white" : "bg-[#2a3040] text-neutral-400 hover:text-white",
+                  )}
+                >
+                  {n}
+                </button>
+              ))}
+              <input
+                type="number"
+                min={1}
+                value={qty}
+                onChange={(e) => setQty(Math.max(1, +e.target.value || 1))}
+                className="ml-1 w-12 rounded border border-[#2a3040] bg-[#0b0e11] px-1 py-0.5 text-center text-[10px] text-neutral-200 outline-none"
+                aria-label="Order qty"
+              />
+            </div>
+          )}
 
           {/* Go Long / Go Short */}
           <div className="mb-2 grid grid-cols-2 gap-1.5">
@@ -179,13 +311,13 @@ export function ReplayTradingPanel({
               onClick={handleGoLong}
               className="rounded bg-green-700 py-1.5 text-[11px] font-bold text-white hover:bg-green-600"
             >
-              GO LONG {qty}
+              GO LONG {effectiveQty}
             </button>
             <button
               onClick={handleGoShort}
               className="rounded bg-red-700 py-1.5 text-[11px] font-bold text-white hover:bg-red-600"
             >
-              GO SHORT {qty}
+              GO SHORT {effectiveQty}
             </button>
           </div>
 
@@ -272,6 +404,29 @@ export function ReplayTradingPanel({
                 })}
               </div>
             </div>
+          )}
+
+          {/* Bracket status on current position */}
+          {position?.bracket && (
+            <div className="mt-2 rounded border border-[#2a3040] bg-[#0d1117] p-1.5 text-[9px]">
+              <span className="text-neutral-500">Bracket: </span>
+              {position.bracket.tp != null && (
+                <span className="text-green-400">TP {position.bracket.tp.toFixed(2)} </span>
+              )}
+              {position.bracket.sl != null && (
+                <span className="text-red-400">SL {position.bracket.sl.toFixed(2)}</span>
+              )}
+            </div>
+          )}
+
+          {/* Analytics button */}
+          {onOpenAnalytics && (
+            <button
+              onClick={onOpenAnalytics}
+              className="mt-2 w-full rounded bg-neutral-800 py-1 text-[10px] font-semibold text-neutral-300 hover:bg-neutral-700 hover:text-white"
+            >
+              Performance Analytics
+            </button>
           )}
         </div>
       )}
