@@ -35,6 +35,12 @@ const patchSchema = z.object({
         code: z.string().min(1).max(20000),
         params: z.record(z.string(), z.number()).default({}),
       }),
+      z.object({
+        kind: z.literal("jev-momentum"),
+        lookback: z.number().int().min(3).max(200).default(12),
+        threshold: z.number().min(0.5).max(0.99).default(0.55),
+        positionCap: z.number().int().min(1).max(1000).default(25),
+      }),
     ])
     .optional(),
 });

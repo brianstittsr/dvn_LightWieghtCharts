@@ -43,10 +43,13 @@ export function DeployBotDialog({
   const [qty, setQty] = useState("1");
   const [sl, setSl] = useState(futures ? "40" : "2");
   const [tp, setTp] = useState(futures ? "80" : "4");
-  const [strategyKind, setStrategyKind] = useState<"ema-cross" | "custom">("ema-cross");
+  const [strategyKind, setStrategyKind] = useState<"ema-cross" | "custom" | "jev-momentum">("ema-cross");
   const [fastLen, setFastLen] = useState("10");
   const [slowLen, setSlowLen] = useState("200");
   const [strategyId, setStrategyId] = useState("");
+  const [jevLookback, setJevLookback] = useState("12");
+  const [jevThreshold, setJevThreshold] = useState("0.55");
+  const [jevPosCap, setJevPosCap] = useState("25");
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState("");
   const [done, setDone] = useState(false);
@@ -89,6 +92,14 @@ export function DeployBotDialog({
   const strategy = () => {
     if (strategyKind === "ema-cross") {
       return { kind: "ema-cross" as const, fastLen: +fastLen, slowLen: +slowLen };
+    }
+    if (strategyKind === "jev-momentum") {
+      return {
+        kind: "jev-momentum" as const,
+        lookback: +jevLookback || 12,
+        threshold: +jevThreshold || 0.55,
+        positionCap: +jevPosCap || 25,
+      };
     }
     const custom = strategies.find((s) => s.id === strategyId);
     if (!custom) return null;
@@ -235,14 +246,14 @@ export function DeployBotDialog({
               </label>
             </div>
 
-            <div className="grid grid-cols-2 gap-2">
-              {(["ema-cross", "custom"] as const).map((k) => (
+            <div className="grid grid-cols-3 gap-2">
+              {(["ema-cross", "jev-momentum", "custom"] as const).map((k) => (
                 <button key={k} onClick={() => setStrategyKind(k)}
                   className={cn(
                     "rounded border p-2 text-xs transition",
                     strategyKind === k ? "border-[#2962ff] bg-[#2962ff] text-white" : "border-[#2a2e39] bg-[#1e222d] text-gray-300",
                   )}>
-                  {k === "ema-cross" ? "EMA Crossover" : "Saved AI strategy"}
+                  {k === "ema-cross" ? "EMA Crossover" : k === "jev-momentum" ? "Jev Momentum" : "Saved AI strategy"}
                 </button>
               ))}
             </div>
@@ -255,6 +266,24 @@ export function DeployBotDialog({
                 <label>
                   <span className={lbl}>Slow EMA</span>
                   <input type="number" min={2} value={slowLen} onChange={(e) => setSlowLen(e.target.value)} className={sel} />
+                </label>
+              </div>
+            ) : strategyKind === "jev-momentum" ? (
+              <div className="grid grid-cols-3 gap-2">
+                <label>
+                  <span className={lbl}>Lookback</span>
+                  <input type="number" min={3} max={200} value={jevLookback}
+                    onChange={(e) => setJevLookback(e.target.value)} className={sel} />
+                </label>
+                <label>
+                  <span className={lbl}>Threshold</span>
+                  <input type="number" min={0.5} max={0.99} step={0.01} value={jevThreshold}
+                    onChange={(e) => setJevThreshold(e.target.value)} className={sel} />
+                </label>
+                <label>
+                  <span className={lbl}>Pos cap</span>
+                  <input type="number" min={1} max={1000} value={jevPosCap}
+                    onChange={(e) => setJevPosCap(e.target.value)} className={sel} />
                 </label>
               </div>
             ) : (

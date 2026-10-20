@@ -16,9 +16,12 @@ const num = (v: number, dp = 4): string => v.toFixed(dp);
 export function JevDashboard({
   run,
   onClose,
+  onDeployBot,
 }: {
   run: JevRun;
   onClose: () => void;
+  /** If provided, shows a "Deploy as Bot" button. */
+  onDeployBot?: () => void;
 }) {
   const [idx, setIdx] = useState(0);
   const [speed, setSpeed] = useState(1);
@@ -102,9 +105,17 @@ export function JevDashboard({
           {run.modelLabel}
           {run.modelKind === "stand-in" ? " · stand-in" : ""}
         </span>
+        {onDeployBot && done && (
+          <button
+            onClick={onDeployBot}
+            className="ml-auto rounded bg-[#1e7a3c] px-3 py-1 text-xs font-bold text-white hover:bg-[#259a4b]"
+          >
+            Deploy as Bot
+          </button>
+        )}
         <button
           onClick={onClose}
-          className="ml-auto rounded bg-neutral-800 px-2.5 py-1 text-xs text-neutral-300 hover:bg-neutral-700"
+          className={cn(onDeployBot && done ? "" : "ml-auto", "rounded bg-neutral-800 px-2.5 py-1 text-xs text-neutral-300 hover:bg-neutral-700")}
         >
           ✕ Close
         </button>

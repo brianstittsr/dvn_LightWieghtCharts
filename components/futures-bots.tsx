@@ -83,7 +83,9 @@ export function FuturesBots({
                 <div className="mt-0.5 truncate pl-4 text-[11px] text-gray-500">
                   {b.strategy.kind === "ema-cross"
                     ? `EMA ${b.strategy.fastLen}/${b.strategy.slowLen} cross`
-                    : `AI: ${b.strategy.name}`}{" "}
+                    : b.strategy.kind === "jev-momentum"
+                      ? `Jev momentum (${b.strategy.lookback})`
+                      : `AI: ${b.strategy.name}`}{" "}
                   · {b.contractName ?? b.contractId} · {b.timeframe}
                 </div>
               </button>
@@ -162,6 +164,9 @@ function BotDetail({
     initialSlow: bot.strategy.kind === "ema-cross" ? (bot.strategy.initialSlow ?? "") : "",
     prompt: bot.strategy.kind === "custom" ? bot.strategy.prompt : "",
     code: bot.strategy.kind === "custom" ? bot.strategy.code : "",
+    jevLookback: bot.strategy.kind === "jev-momentum" ? bot.strategy.lookback : 12,
+    jevThreshold: bot.strategy.kind === "jev-momentum" ? bot.strategy.threshold : 0.55,
+    jevPosCap: bot.strategy.kind === "jev-momentum" ? bot.strategy.positionCap : 25,
   });
   const [busy, setBusy] = useState("");
 
@@ -221,6 +226,13 @@ function BotDetail({
           slowLen: edit.slowLen,
           initialFast: edit.initialFast === "" ? undefined : Number(edit.initialFast),
           initialSlow: edit.initialSlow === "" ? undefined : Number(edit.initialSlow),
+        };
+      } else if (bot.strategy.kind === "jev-momentum") {
+        body.strategy = {
+          kind: "jev-momentum",
+          lookback: edit.jevLookback,
+          threshold: edit.jevThreshold,
+          positionCap: edit.jevPosCap,
         };
       } else {
         body.strategy = { ...bot.strategy, prompt: edit.prompt, code: edit.code };
@@ -372,6 +384,29 @@ function BotDetail({
                 onChange={(e) => setEdit({ ...edit, initialSlow: e.target.value === "" ? "" : +e.target.value })}
                 className={cn(sel, "mt-1")} />
             </label>
+          </div>
+        )}
+
+        {bot.strategy.kind === "jev-momentum" && (
+          <div className="mt-3 grid grid-cols-3 gap-2">
+            <label className="text-[11px] text-gray-400">
+              Lookback bars
+              <input type="number" min={3} max={200} value={edit.jevLookback}
+                onChange={(e) => setEdit({ ...edit, jevLookback: +e.target.value })} className={cn(sel, "mt-1")} />
+            </label>
+            <label className="text-[11px] text-gray-400">
+              Threshold (0.5–0.99)
+              <input type="number" min={0.5} max={0.99} step={0.01} value={edit.jevThreshold}
+                onChange={(e) => setEdit({ ...edit, jevThreshold: +e.target.value })} className={cn(sel, "mt-1")} />
+            </label>
+            <label className="text-[11px] text-gray-400">
+              Position cap
+              <input type="number" min={1} max={1000} value={edit.jevPosCap}
+                onChange={(e) => setEdit({ ...edit, jevPosCap: +e.target.value })} className={cn(sel, "mt-1")} />
+            </label>
+            <p className="col-span-3 text-[10px] text-gray-600">
+              JEV momentum: logistic-squashed short-term momentum signal. Lookback = bars compared, threshold = confidence needed for buy/sell, cap = max position accumulation.
+            </p>
           </div>
         )}
 
@@ -565,7 +600,10 @@ function BotForm({
   const [slowLen, setSlowLen] = useState("200");
   const [seedFast, setSeedFast] = useState("");
   const [seedSlow, setSeedSlow] = useState("");
-  const [strategyKind, setStrategyKind] = useState<"ema-cross" | "custom">("ema-cross");
+  const [strategyKind, setStrategyKind] = useState<"ema-cross" | "custom" | "jev-momentum">("ema-cross");
+  const [jevLookback, setJevLookback] = useState("12");
+  const [jevThreshold, setJevThreshold] = useState("0.55");
+  const [jevPosCap, setJevPosCap] = useState("25");
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiBusy, setAiBusy] = useState(false);
   const [aiErr, setAiErr] = useState("");
@@ -641,13 +679,20 @@ function BotForm({
               initialFast: seedFast === "" ? undefined : +seedFast,
               initialSlow: seedSlow === "" ? undefined : +seedSlow,
             }
-          : {
-              kind: "custom" as const,
-              name: generated?.name ?? "Custom",
-              prompt: aiPrompt,
-              code: generated?.code ?? "",
-              params: generated?.params ?? {},
-            };
+          : strategyKind === "jev-momentum"
+            ? {
+                kind: "jev-momentum" as const,
+                lookback: +jevLookback || 12,
+                threshold: +jevThreshold || 0.55,
+                positionCap: +jevPosCap || 25,
+              }
+            : {
+                kind: "custom" as const,
+                name: generated?.name ?? "Custom",
+                prompt: aiPrompt,
+                code: generated?.code ?? "",
+                params: generated?.params ?? {},
+              };
       const res = await authFetch("/api/futures/bots", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -755,10 +800,10 @@ function BotForm({
       {/* Strategy */}
       <div className="rounded border border-[#2a2e39] p-3">
         <div className="mb-2 flex gap-2">
-          {(["ema-cross", "custom"] as const).map((k) => (
+          {(["ema-cross", "jev-momentum", "custom"] as const).map((k) => (
             <button key={k} onClick={() => setStrategyKind(k)}
               className={cn(btn, strategyKind === k ? "bg-[#2962ff]" : "bg-[#3a3f4b]")}>
-              {k === "ema-cross" ? "EMA Crossover" : "AI generated"}
+              {k === "ema-cross" ? "EMA Crossover" : k === "jev-momentum" ? "Jev Momentum" : "AI generated"}
             </button>
           ))}
         </div>
@@ -787,6 +832,27 @@ function BotForm({
             </label>
             <p className="col-span-4 text-[10px] text-gray-600">
               Seed values skip the warmup wait — starts immediately when both are set.
+            </p>
+          </div>
+        ) : strategyKind === "jev-momentum" ? (
+          <div className="grid grid-cols-3 gap-2">
+            <label className="text-[11px] text-gray-400">
+              Lookback bars
+              <input type="number" min={3} max={200} value={jevLookback}
+                onChange={(e) => setJevLookback(e.target.value)} className={cn(sel, "mt-1")} />
+            </label>
+            <label className="text-[11px] text-gray-400">
+              Threshold (0.5–0.99)
+              <input type="number" min={0.5} max={0.99} step={0.01} value={jevThreshold}
+                onChange={(e) => setJevThreshold(e.target.value)} className={cn(sel, "mt-1")} />
+            </label>
+            <label className="text-[11px] text-gray-400">
+              Position cap
+              <input type="number" min={1} max={1000} value={jevPosCap}
+                onChange={(e) => setJevPosCap(e.target.value)} className={cn(sel, "mt-1")} />
+            </label>
+            <p className="col-span-3 text-[10px] text-gray-600">
+              JEV-style HFT momentum: uses logistic-squashed short-term price momentum. Lookback = bars to compare, threshold = confidence needed to trigger (0.55 = slightly bullish enters long), cap = max contract accumulation.
             </p>
           </div>
         ) : (

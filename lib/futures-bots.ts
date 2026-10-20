@@ -56,7 +56,18 @@ export interface CustomStrategy {
   params: Record<string, number>;
 }
 
-export type BotStrategy = EmaCrossStrategy | CustomStrategy;
+/** JEV-style HFT momentum strategy — uses logistic squash of short-term momentum. */
+export interface JevMomentumStrategy {
+  kind: "jev-momentum";
+  /** Lookback ticks for momentum calculation (default 12). */
+  lookback: number;
+  /** Confidence threshold to trigger buy/sell (0.50–0.99, default 0.55). */
+  threshold: number;
+  /** Max |position| in units — caps runaway accumulation. */
+  positionCap: number;
+}
+
+export type BotStrategy = EmaCrossStrategy | CustomStrategy | JevMomentumStrategy;
 
 export interface BotEvent {
   t: string;
@@ -196,13 +207,32 @@ function evalSignal(bot: FuturesBot, candles: Candle[]): { desired: Desired; ext
       extras: { [`${s.fastLen} EMA`]: f ?? 0, [`${s.slowLen} EMA`]: sv ?? 0 },
     };
   }
+  if (s.kind === "jev-momentum") {
+    // JEV momentum: logistic squash of recent bar momentum
+    const K = Math.max(3, s.lookback);
+    const closes = candles.map((c) => c.close);
+    if (closes.length < K + 1) return { desired: "flat", extras: { momentum: 0 } };
+    const recent = closes[closes.length - 1];
+    const past = closes[closes.length - 1 - K];
+    const mom = (recent - past) / past;
+    // Logistic squash — ~±0.15% momentum saturates the probabilities
+    const p = 1 / (1 + Math.exp(-mom * 2500));
+    const buyProb = Math.min(0.98, Math.max(0.02, p));
+    const sellProb = 1 - buyProb;
+    const thresh = s.threshold;
+    const desired: Desired = buyProb >= thresh ? "long" : sellProb >= thresh ? "short" : "flat";
+    return {
+      desired,
+      extras: { momentum: mom * 10000, buyProb: Math.round(buyProb * 100), sellProb: Math.round(sellProb * 100) },
+    };
+  }
   const desired = desiredFromCode(s.code, candles, s.params);
   return { desired: desired[desired.length - 1] ?? "flat", extras: {} };
 }
 
 async function tick(bot: FuturesBot): Promise<void> {
   const tfMs = TF_MS[bot.timeframe];
-  const slowLen = bot.strategy.kind === "ema-cross" ? bot.strategy.slowLen : 300;
+  const slowLen = bot.strategy.kind === "ema-cross" ? bot.strategy.slowLen : bot.strategy.kind === "jev-momentum" ? bot.strategy.lookback + 5 : 300;
   const lookback = tfMs * Math.min(slowLen + 20, 400);
   const { creds, accountId } = await resolve(bot);
 

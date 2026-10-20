@@ -56,6 +56,7 @@ import {
 } from "@/lib/sim-account";
 import { SimPerformanceDialog } from "@/components/sim-performance";
 import { JevDashboard } from "@/components/jev-dashboard";
+import { DeployBotDialog } from "@/components/deploy-bot-dialog";
 import type { JevRun } from "@/lib/jev/engine";
 import type { BacktestResult } from "@/lib/backtest";
 import { useAlpacaPositions } from "@/lib/positions-store";
@@ -223,6 +224,7 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
   const [btOpen, setBtOpen] = useState(false);
   const [btResult, setBtResult] = useState<BacktestResult | null>(null);
   const [jevRun, setJevRun] = useState<JevRun | null>(null);
+  const [jevDeployOpen, setJevDeployOpen] = useState(false);
   const btMarkersRef = useRef<{
     api: { setMarkers: (m: SeriesMarker<UTCTimestamp>[]) => void };
     series: ISeriesApi<"Candlestick">;
@@ -1386,7 +1388,22 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
         onClose={() => setBtOpen(false)}
       />
       <BacktestResultPopup result={btResult} onClose={() => setBtResult(null)} />
-      {jevRun && <JevDashboard run={jevRun} onClose={() => setJevRun(null)} />}
+      {jevRun && (
+        <JevDashboard
+          run={jevRun}
+          onClose={() => setJevRun(null)}
+          onDeployBot={() => {
+            setJevDeployOpen(true);
+          }}
+        />
+      )}
+      {jevDeployOpen && (
+        <DeployBotDialog
+          assetClass={isFutures ? "future" : isCrypto ? "crypto" : "stock"}
+          symbol={symbol}
+          onClose={() => setJevDeployOpen(false)}
+        />
+      )}
       {newsOpen && isCrypto && (
         <CryptoNewsDialog symbol={symbol} onClose={() => setNewsOpen(false)} />
       )}
