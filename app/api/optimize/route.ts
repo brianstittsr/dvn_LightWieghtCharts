@@ -4,6 +4,7 @@ import { runBacktest, STRATEGY_PARAMS, type BacktestStrategyId } from "@/lib/bac
 import { barsRangeFor } from "@/lib/scanner/data";
 import { verifyUser } from "@/lib/server-auth";
 import type { ParamDef } from "@/lib/indicators/types";
+import { TIMEFRAMES } from "@/lib/timeframe";
 
 const paramDefSchema = z.object({
   key: z.string().min(1).max(40),
@@ -18,7 +19,7 @@ const paramDefSchema = z.object({
 const bodySchema = z.object({
   assetClass: z.enum(["stock", "crypto", "future"]).default("stock"),
   symbol: z.string().min(1).max(15),
-  tf: z.enum(["1m", "5m", "15m", "1h", "4h", "1d"]).default("15m"),
+  tf: z.enum(TIMEFRAMES).default("15m"),
   from: z.number().int().positive(),
   to: z.number().int().positive(),
   strategy: z.string().min(1).max(60),

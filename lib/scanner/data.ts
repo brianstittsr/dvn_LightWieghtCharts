@@ -12,6 +12,12 @@ import {
 } from "@/lib/platforms/projectx";
 import type { Candle } from "@/lib/types";
 import type { AssetClass } from "@/lib/scanner/types";
+import {
+  aggregateCandles,
+  BASE_TIMEFRAME,
+  TIMEFRAME_SECONDS,
+  type Timeframe,
+} from "@/lib/timeframe";
 
 interface RawBar {
   t: string;
@@ -91,19 +97,20 @@ async function alpacaBars(
   keys?: AlpacaKeys,
   range?: { fromSec: number; toSec: number },
 ): Promise<Candle[]> {
+  const baseTf = BASE_TIMEFRAME[tf as Timeframe] ?? "5m";
   if (range) {
     const start = new Date(range.fromSec * 1000).toISOString();
     const end = new Date(range.toSec * 1000).toISOString();
     return alpacaBarsRange(
       (pt) =>
-        `/v2/stocks/${encodeURIComponent(symbol)}/bars?timeframe=${ALPACA_TF[tf] ?? "5Min"}&start=${start}&end=${end}&limit=10000${pt ? `&page_token=${pt}` : ""}`,
+        `/v2/stocks/${encodeURIComponent(symbol)}/bars?timeframe=${ALPACA_TF[baseTf] ?? "5Min"}&start=${start}&end=${end}&limit=10000${pt ? `&page_token=${pt}` : ""}`,
       (res) => (res as { bars?: RawBar[] }).bars,
       10000,
       keys,
     );
   }
   const res = await alpacaData<{ bars?: RawBar[] }>(
-    `/v2/stocks/${encodeURIComponent(symbol)}/bars?timeframe=${ALPACA_TF[tf] ?? "5Min"}&limit=${limit}`,
+    `/v2/stocks/${encodeURIComponent(symbol)}/bars?timeframe=${ALPACA_TF[baseTf] ?? "5Min"}&limit=${limit}`,
     undefined,
     keys,
   );
@@ -117,28 +124,29 @@ async function alpacaCryptoBars(
   keys?: AlpacaKeys,
   range?: { fromSec: number; toSec: number },
 ): Promise<Candle[]> {
+  const baseTf = BASE_TIMEFRAME[tf as Timeframe] ?? "5m";
   if (range) {
     const start = new Date(range.fromSec * 1000).toISOString();
     const end = new Date(range.toSec * 1000).toISOString();
     const sym = alpacaCryptoSymbol(symbol);
     const candles = await alpacaBarsRange(
       (pt) =>
-        `/v1beta3/crypto/us/bars?symbols=${encodeURIComponent(sym)}&timeframe=${ALPACA_TF[tf] ?? "5Min"}&start=${start}&end=${end}&limit=10000${pt ? `&page_token=${pt}` : ""}`,
+        `/v1beta3/crypto/us/bars?symbols=${encodeURIComponent(sym)}&timeframe=${ALPACA_TF[baseTf] ?? "5Min"}&start=${start}&end=${end}&limit=10000${pt ? `&page_token=${pt}` : ""}`,
       (res) => (res as { bars?: Record<string, RawBar[]> }).bars?.[sym],
       10000,
       keys,
       true,
     ).catch(() => [] as Candle[]);
     if (candles.length) return candles;
-    return hlBars(symbol, tf, limit, range);
+    return hlBars(symbol, baseTf, limit, range);
   }
   const res = await alpacaDataRaw<{ bars?: Record<string, RawBar[]> }>(
-    `/v1beta3/crypto/us/bars?symbols=${encodeURIComponent(alpacaCryptoSymbol(symbol))}&timeframe=${ALPACA_TF[tf] ?? "5Min"}&limit=${limit}`,
+    `/v1beta3/crypto/us/bars?symbols=${encodeURIComponent(alpacaCryptoSymbol(symbol))}&timeframe=${ALPACA_TF[baseTf] ?? "5Min"}&limit=${limit}`,
     keys,
   ).catch(() => ({}) as { bars?: Record<string, RawBar[]> });
   const bars = res.bars?.[alpacaCryptoSymbol(symbol)];
   // Fall back to Hyperliquid when Alpaca crypto bars aren't entitled.
-  if (!bars?.length) return hlBars(symbol, tf, limit);
+  if (!bars?.length) return hlBars(symbol, baseTf, limit);
   return bars.map(toCandle);
 }
 
@@ -173,6 +181,7 @@ async function futuresBars(
   limit: number,
   range?: { fromSec: number; toSec: number },
 ): Promise<Candle[]> {
+  const baseTf = BASE_TIMEFRAME[tf as Timeframe] ?? "5m";
   const resolved = await userCredsFor("topstep", uid);
   if (!resolved) throw new Error("No TopStep credentials for futures bars");
   const key = root.toUpperCase();
@@ -181,8 +190,8 @@ async function futuresBars(
     contractId = (await resolveFrontContract(resolved.creds, key)).id;
     frontCache.set(key, contractId);
   }
-  const px = PX_TF[tf] ?? PX_TF["5m"];
-  const secs = tf === "1d" ? 86400 : tf === "1h" ? 3600 : tf === "15m" ? 900 : tf === "5m" ? 300 : 60;
+  const px = PX_TF[baseTf] ?? PX_TF["5m"];
+  const secs = baseTf === "1d" ? 86400 : baseTf === "4h" ? 14400 : baseTf === "1h" ? 3600 : baseTf === "15m" ? 900 : baseTf === "5m" ? 300 : 60;
   const bars = await projectxBars(
     resolved.creds,
     contractId,
@@ -215,9 +224,19 @@ export async function barsFor(
   keys?: AlpacaKeys,
 ): Promise<Candle[]> {
   const sym = symbol.toUpperCase();
-  if (assetClass === "stock") return alpacaBars(sym, tf, limit, keys);
-  if (assetClass === "crypto") return alpacaCryptoBars(sym, tf, limit, keys);
-  return futuresBars(uid, sym, tf, limit);
+  const timeframe = tf as Timeframe;
+  const baseTf = BASE_TIMEFRAME[timeframe] ?? "5m";
+  const baseLimit = Math.min(
+    10_000,
+    Math.ceil(limit * ((TIMEFRAME_SECONDS[timeframe] ?? 300) / TIMEFRAME_SECONDS[baseTf])) + 10,
+  );
+  const candles = assetClass === "stock"
+    ? await alpacaBars(sym, baseTf, baseLimit, keys)
+    : assetClass === "crypto"
+      ? await alpacaCryptoBars(sym, baseTf, baseLimit, keys)
+      : await futuresBars(uid, sym, baseTf, baseLimit);
+  const aggregated = aggregateCandles(candles, timeframe);
+  return limit > 0 ? aggregated.slice(-limit) : aggregated;
 }
 
 /**
@@ -235,7 +254,12 @@ export async function barsRangeFor(
 ): Promise<Candle[]> {
   const sym = symbol.toUpperCase();
   const range = { fromSec, toSec };
-  if (assetClass === "stock") return alpacaBars(sym, tf, 0, keys, range);
-  if (assetClass === "crypto") return alpacaCryptoBars(sym, tf, 0, keys, range);
-  return futuresBars(uid, sym, tf, 0, range);
+  const timeframe = tf as Timeframe;
+  const baseTf = BASE_TIMEFRAME[timeframe] ?? "5m";
+  const candles = assetClass === "stock"
+    ? await alpacaBars(sym, baseTf, 0, keys, range)
+    : assetClass === "crypto"
+      ? await alpacaCryptoBars(sym, baseTf, 0, keys, range)
+      : await futuresBars(uid, sym, baseTf, 0, range);
+  return aggregateCandles(candles, timeframe);
 }

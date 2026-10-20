@@ -2,8 +2,8 @@
 
 import { useCallback, useEffect, useState } from "react";
 import type { AppSettings } from "@/lib/settings";
+import { TIMEFRAMES } from "@/lib/timeframe";
 
-const TIMEFRAMES = ["1m", "5m", "15m", "30m", "1h", "4h", "1D"] as const;
 const SESSION_ROWS = [
   { label: "Asia", start: "asiaStart", end: "asiaEnd" },
   { label: "London", start: "londonStart", end: "londonEnd" },

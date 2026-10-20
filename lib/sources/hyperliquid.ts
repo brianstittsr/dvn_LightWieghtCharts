@@ -1,7 +1,14 @@
 import type { Candle } from "@/lib/types";
 import type { DataSource } from "@/lib/data-sources";
 import { CRYPTO_SYMBOLS } from "@/lib/symbols";
-import { TIMEFRAMES, HL_INTERVAL, TIMEFRAME_SECONDS, type Timeframe } from "@/lib/timeframe";
+import {
+  aggregateCandles,
+  BASE_TIMEFRAME,
+  bucketStart,
+  TIMEFRAMES,
+  TIMEFRAME_SECONDS,
+  type Timeframe,
+} from "@/lib/timeframe";
 
 const REST_URL = "https://api.hyperliquid.xyz/info";
 const WS_URL = "wss://api.hyperliquid.xyz/ws";
@@ -16,9 +23,11 @@ interface HlRestCandle {
 }
 
 async function fetchHistory(symbol: string, tf: Timeframe): Promise<Candle[]> {
-  const interval = HL_INTERVAL[tf];
+  const interval = BASE_TIMEFRAME[tf];
   const endTime = Date.now();
-  const startTime = endTime - TIMEFRAME_SECONDS[tf] * 500 * 1000;
+  const requestedRange = TIMEFRAME_SECONDS[tf] * 500 * 1000;
+  const maxRange = TIMEFRAME_SECONDS[interval] * 5000 * 1000;
+  const startTime = endTime - Math.min(requestedRange, maxRange);
   const res = await fetch(REST_URL, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -29,7 +38,7 @@ async function fetchHistory(symbol: string, tf: Timeframe): Promise<Candle[]> {
   });
   if (!res.ok) throw new Error(`Hyperliquid history failed: ${res.status}`);
   const rows = (await res.json()) as HlRestCandle[];
-  return rows.map((r) => ({
+  const candles = rows.map((r) => ({
     time: Math.floor(r.t / 1000),
     open: Number(r.o),
     high: Number(r.h),
@@ -37,6 +46,7 @@ async function fetchHistory(symbol: string, tf: Timeframe): Promise<Candle[]> {
     close: Number(r.c),
     volume: Number(r.v),
   }));
+  return aggregateCandles(candles, tf);
 }
 
 interface HlWsCandle {
@@ -150,6 +160,19 @@ export const hyperliquidSource: DataSource = {
   timeframes: TIMEFRAMES,
   fetchHistory,
   subscribe(symbol, tf, onCandle) {
-    return wsClient.subscribe(symbol, HL_INTERVAL[tf], onCandle);
+    const interval = BASE_TIMEFRAME[tf];
+    let currentBucket = -1;
+    const currentCandles = new Map<number, Candle>();
+    return wsClient.subscribe(symbol, interval, (candle) => {
+      const bucket = bucketStart(candle.time, tf);
+      if (bucket !== currentBucket) {
+        currentBucket = bucket;
+        currentCandles.clear();
+      }
+      currentCandles.set(candle.time, candle);
+      const aggregated = aggregateCandles([...currentCandles.values()], tf);
+      const latest = aggregated[aggregated.length - 1];
+      if (latest) onCandle(latest);
+    });
   },
 };

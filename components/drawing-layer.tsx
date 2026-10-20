@@ -6,14 +6,25 @@ import type { IndicatorBox } from "@/lib/indicators/types";
 import type { Candle } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
+export interface PositionSetup {
+  id: string;
+  side: "long" | "short";
+  entry: number;
+  stop: number;
+  target: number;
+  riskReward: number;
+  time: number;
+}
+
 type Drawing =
   | { kind: "hline"; price: number; color: string }
   | { kind: "tp"; price: number; color: string }
   | { kind: "sl"; price: number; color: string }
   | { kind: "trend"; t1: number; p1: number; t2: number; p2: number; color: string }
-  | { kind: "rect"; t1: number; p1: number; t2: number; p2: number; color: string };
+  | { kind: "rect"; t1: number; p1: number; t2: number; p2: number; color: string }
+  | ({ kind: "position" } & PositionSetup);
 
-type Tool = "cursor" | "hline" | "trend" | "rect" | "eraser" | "anchor" | "tp" | "sl";
+type Tool = "cursor" | "hline" | "trend" | "rect" | "eraser" | "anchor" | "tp" | "sl" | "long" | "short";
 
 /** TP/SL levels drawn on the chart, reported to the pane for cross alerts. */
 export interface TpSlLevel {
@@ -33,6 +44,7 @@ interface DrawingLayerProps {
   onAnchorClick?: (t: number) => void;
   /** Called whenever drawn TP/SL levels change. */
   onLevels?: (levels: TpSlLevel[]) => void;
+  onPositionCreated?: (position: PositionSetup) => void;
   /** Ref the layer fills with a "remove this TP/SL line" function — the pane
    *  calls it after a level fires so the line disappears. */
   consumeLevelRef?: React.MutableRefObject<((lvl: TpSlLevel) => void) | null>;
@@ -87,7 +99,7 @@ function storageLoad(key: string): Drawing[] {
 }
 
 /** Canvas overlay providing trendline / horizontal-line / rectangle drawing. */
-export function DrawingLayer({ getChart, getSeries, storageKey, getBoxes, getCandles, onAnchorClick, onLevels, consumeLevelRef }: DrawingLayerProps) {
+export function DrawingLayer({ getChart, getSeries, storageKey, getBoxes, getCandles, onAnchorClick, onLevels, onPositionCreated, consumeLevelRef }: DrawingLayerProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [tool, setTool] = useState<Tool>("cursor");
   // Start empty: localStorage is read in the effect below so SSR markup matches.
@@ -240,10 +252,71 @@ export function DrawingLayer({ getChart, getSeries, storageKey, getBoxes, getCan
         if (m) {
           if (tool === "trend") all.push({ kind: "trend", t1: anchor.t, p1: anchor.p, t2: m.t, p2: m.p, color: DRAW_COLOR });
           if (tool === "rect") all.push({ kind: "rect", t1: anchor.t, p1: anchor.p, t2: m.t, p2: m.p, color: DRAW_COLOR });
+          if ((tool === "long" && m.p < anchor.p) || (tool === "short" && m.p > anchor.p)) {
+            const riskReward = 2;
+            const risk = Math.abs(anchor.p - m.p);
+            all.push({
+              kind: "position",
+              id: "preview",
+              side: tool,
+              entry: anchor.p,
+              stop: m.p,
+              target: tool === "long" ? anchor.p + risk * riskReward : anchor.p - risk * riskReward,
+              riskReward,
+              time: anchor.t,
+            });
+          }
         }
       }
 
       for (const d of all) {
+        if (d.kind === "position") {
+          const entryY = getSeries()?.priceToCoordinate(d.entry);
+          const stopY = getSeries()?.priceToCoordinate(d.stop);
+          const targetY = getSeries()?.priceToCoordinate(d.target);
+          const startX = getChart()?.timeScale().timeToCoordinate(d.time as UTCTimestamp);
+          if (entryY == null || stopY == null || targetY == null || startX == null) continue;
+          const width = Math.max(80, canvas.width / dpr - startX);
+          ctx.fillStyle = "#22c55e26";
+          ctx.fillRect(startX, Math.min(entryY, targetY), width, Math.abs(entryY - targetY));
+          ctx.fillStyle = "#ef444426";
+          ctx.fillRect(startX, Math.min(entryY, stopY), width, Math.abs(entryY - stopY));
+          ctx.lineWidth = 1.5;
+          ctx.setLineDash([]);
+          for (const level of [
+            { y: targetY, color: "#22c55e", label: `Target ${d.target.toFixed(2)}` },
+            { y: stopY, color: "#ef4444", label: `Stop ${d.stop.toFixed(2)}` },
+          ]) {
+            ctx.strokeStyle = level.color;
+            ctx.beginPath();
+            ctx.moveTo(startX, level.y);
+            ctx.lineTo(startX + width, level.y);
+            ctx.stroke();
+            ctx.font = "600 10px sans-serif";
+            const levelWidth = ctx.measureText(level.label).width;
+            ctx.fillStyle = level.color;
+            ctx.fillRect(startX + 4, level.y - 9, levelWidth + 12, 18);
+            ctx.fillStyle = "#ffffff";
+            ctx.textAlign = "left";
+            ctx.textBaseline = "middle";
+            ctx.fillText(level.label, startX + 10, level.y);
+          }
+          ctx.strokeStyle = "#e5e7eb";
+          ctx.beginPath();
+          ctx.moveTo(startX, entryY);
+          ctx.lineTo(startX + width, entryY);
+          ctx.stroke();
+          const label = `${d.side.toUpperCase()} · R:R ${d.riskReward}:1`;
+          ctx.font = "600 10px sans-serif";
+          const tw = ctx.measureText(label).width;
+          ctx.fillStyle = d.side === "long" ? "#059669" : "#dc2626";
+          ctx.fillRect(startX + 4, entryY - 9, tw + 12, 18);
+          ctx.fillStyle = "#ffffff";
+          ctx.textAlign = "left";
+          ctx.textBaseline = "middle";
+          ctx.fillText(label, startX + 10, entryY);
+          continue;
+        }
         ctx.strokeStyle = d.color;
         ctx.lineWidth = 1.5;
         ctx.setLineDash(d.kind === "hline" ? [6, 4] : []);
@@ -289,7 +362,7 @@ export function DrawingLayer({ getChart, getSeries, storageKey, getBoxes, getCan
     };
     raf = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(raf);
-  }, [tool, getSeries, toXY, fromXY, getBoxes, getCandles]);
+  }, [tool, getChart, getSeries, toXY, fromXY, getBoxes, getCandles]);
 
   function hitTest(x: number, y: number): number {
     const list = drawingsRef.current;
@@ -299,6 +372,12 @@ export function DrawingLayer({ getChart, getSeries, storageKey, getBoxes, getCan
         const series = getSeries();
         const yy = series?.priceToCoordinate(d.price);
         if (yy != null && Math.abs(y - yy) < HIT_PX) return i;
+      } else if (d.kind === "position") {
+        const series = getSeries();
+        const levels = [d.entry, d.stop, d.target].map((price) =>
+          series?.priceToCoordinate(price),
+        );
+        if (levels.some((levelY) => levelY != null && Math.abs(y - levelY) < HIT_PX)) return i;
       } else {
         const a = toXY(d.t1, d.p1);
         const b = toXY(d.t2, d.p2);
@@ -357,6 +436,31 @@ export function DrawingLayer({ getChart, getSeries, storageKey, getBoxes, getCan
       persistDrawings([...drawingsRef.current, { kind: tool, price: pt.p, color }]);
       return;
     }
+    if (tool === "long" || tool === "short") {
+      if (!anchorRef.current) {
+        anchorRef.current = pt;
+        return;
+      }
+      const anchor = anchorRef.current;
+      const validStop = tool === "long" ? pt.p < anchor.p : pt.p > anchor.p;
+      if (!validStop) return;
+      const riskReward = 2;
+      const risk = Math.abs(anchor.p - pt.p);
+      const position: PositionSetup = {
+        id: crypto.randomUUID(),
+        side: tool,
+        entry: anchor.p,
+        stop: pt.p,
+        target: tool === "long" ? anchor.p + risk * riskReward : anchor.p - risk * riskReward,
+        riskReward,
+        time: anchor.t,
+      };
+      anchorRef.current = null;
+      persistDrawings([...drawingsRef.current, { kind: "position", ...position }]);
+      onPositionCreated?.(position);
+      setTool("cursor");
+      return;
+    }
     // Two-click tools.
     if (!anchorRef.current) {
       anchorRef.current = pt;
@@ -380,6 +484,8 @@ export function DrawingLayer({ getChart, getSeries, storageKey, getBoxes, getCan
     { id: "hline", icon: "─", title: "Horizontal line (click)" },
     { id: "trend", icon: "╱", title: "Trend line (2 clicks)" },
     { id: "rect", icon: "▭", title: "Rectangle (2 clicks)" },
+    { id: "long", icon: "L", title: "Long position (click entry, then stop)" },
+    { id: "short", icon: "S", title: "Short position (click entry, then stop)" },
     { id: "tp", icon: "TP", title: "Take profit line (click)" },
     { id: "sl", icon: "SL", title: "Stop loss line (click)" },
     { id: "eraser", icon: "⌫", title: "Eraser (click a drawing)" },

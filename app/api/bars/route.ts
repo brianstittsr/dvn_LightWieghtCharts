@@ -2,27 +2,36 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { barsRangeFor } from "@/lib/scanner/data";
 import { verifyUser } from "@/lib/server-auth";
+import { TIMEFRAMES, TIMEFRAME_SECONDS, type Timeframe } from "@/lib/timeframe";
 
 const querySchema = z.object({
   assetClass: z.enum(["stock", "crypto", "future"]).default("stock"),
   symbol: z.string().min(1).max(15),
-  tf: z.enum(["1m", "5m", "15m", "1h", "4h", "1d"]).default("5m"),
+  tf: z.enum(TIMEFRAMES).default("5m"),
   /** Range bounds as unix seconds. */
   from: z.coerce.number().int().positive(),
   to: z.coerce.number().int().positive(),
 });
 
 /** Max candles per timeframe a range request may return. */
-const MAX_BARS: Record<string, number> = {
+const MAX_BARS: Record<Timeframe, number> = {
   "1m": 10_000,
   "5m": 10_000,
   "15m": 10_000,
+  "30m": 10_000,
+  "45m": 10_000,
   "1h": 8_000,
+  "2h": 8_000,
   "4h": 6_000,
+  "6h": 6_000,
+  "8h": 6_000,
+  "12h": 6_000,
+  "16h": 6_000,
   "1d": 5_000,
+  "2D": 5_000,
+  "W": 5_000,
+  "M": 5_000,
 };
-
-const TF_SECONDS: Record<string, number> = { "1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14400, "1d": 86400 };
 
 /** GET — candles over an explicit date range for the strategy optimizer. */
 export async function GET(req: NextRequest) {
@@ -38,7 +47,7 @@ export async function GET(req: NextRequest) {
   if (from >= to) {
     return NextResponse.json({ error: "`from` must be before `to`" }, { status: 400 });
   }
-  const spanBars = Math.ceil((to - from) / (TF_SECONDS[tf] ?? 300));
+  const spanBars = Math.ceil((to - from) / TIMEFRAME_SECONDS[tf]);
   if (spanBars > MAX_BARS[tf]) {
     return NextResponse.json(
       {
