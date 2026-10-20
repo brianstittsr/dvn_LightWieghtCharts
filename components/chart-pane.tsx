@@ -43,7 +43,14 @@ import {
   simClosePosition,
   simFlatten,
   simChallengeMetrics,
+  loadCopyGroup,
+  createCopyGroup,
+  copyTradeOpen,
+  copyTradeClose,
+  copyTradeFlatten,
+  resetCopyGroup,
   type SimAccountState,
+  type CopyTradeGroup,
 } from "@/lib/sim-account";
 import { JevDashboard } from "@/components/jev-dashboard";
 import type { JevRun } from "@/lib/jev/engine";
@@ -254,6 +261,10 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
   const [simAccount, setSimAccount] = useState<SimAccountState | null>(() => {
     if (typeof window === "undefined") return null;
     return loadSimAccount();
+  });
+  const [copyGroup, setCopyGroup] = useState<CopyTradeGroup | null>(() => {
+    if (typeof window === "undefined") return null;
+    return loadCopyGroup();
   });
   const [practiceSetup, setPracticeSetup] = useState(false);
   const [simCalendarOpen, setSimCalendarOpen] = useState(false);
@@ -551,6 +562,19 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
         const account = resetSimAccount(config.startBalance, config.challenge);
         setSimAccount(account);
         setPracticeMode(true);
+
+        // Initialize copy-trade group if copy accounts are configured
+        if (config.copyAccounts.length > 0) {
+          const group = createCopyGroup(
+            "Practice Group",
+            config.startBalance,
+            config.challenge,
+            config.copyAccounts,
+          );
+          setCopyGroup(group);
+        } else {
+          setCopyGroup(null);
+        }
       } catch (e) {
         setError(e instanceof Error ? e.message : "Failed to load historical data");
       }
@@ -563,7 +587,7 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
     exitReplay();
   }, [exitReplay]);
 
-  // Sim trade handlers for practice mode
+  // Sim trade handlers for practice mode (supports single + copy-trade)
   const simGoLong = useCallback(
     (qty: number) => {
       if (!simAccount || price == null) return;
@@ -571,10 +595,17 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
       const assetClass = info.source === "futures" ? "future" : info.source === "alpaca" ? "stock" : "forex";
       const multiplier = assetClass === "future" ? 50 : 1; // ES/NQ=$50/pt, stocks=$1
       const time = replayTime ?? Math.floor(Date.now() / 1000);
-      const result = simOpenPosition(simAccount, symbol, "buy", qty, price, time, assetClass, multiplier);
-      setSimAccount(result.state);
+
+      if (copyGroup) {
+        const updated = copyTradeOpen(copyGroup, symbol, "buy", qty, price, time, assetClass, multiplier);
+        setCopyGroup(updated);
+        setSimAccount(updated.master);
+      } else {
+        const result = simOpenPosition(simAccount, symbol, "buy", qty, price, time, assetClass, multiplier);
+        setSimAccount(result.state);
+      }
     },
-    [simAccount, price, symbol, replayTime],
+    [simAccount, price, symbol, replayTime, copyGroup],
   );
 
   const simGoShort = useCallback(
@@ -584,10 +615,17 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
       const assetClass = info.source === "futures" ? "future" : info.source === "alpaca" ? "stock" : "forex";
       const multiplier = assetClass === "future" ? 50 : 1;
       const time = replayTime ?? Math.floor(Date.now() / 1000);
-      const result = simOpenPosition(simAccount, symbol, "sell", qty, price, time, assetClass, multiplier);
-      setSimAccount(result.state);
+
+      if (copyGroup) {
+        const updated = copyTradeOpen(copyGroup, symbol, "sell", qty, price, time, assetClass, multiplier);
+        setCopyGroup(updated);
+        setSimAccount(updated.master);
+      } else {
+        const result = simOpenPosition(simAccount, symbol, "sell", qty, price, time, assetClass, multiplier);
+        setSimAccount(result.state);
+      }
     },
-    [simAccount, price, symbol, replayTime],
+    [simAccount, price, symbol, replayTime, copyGroup],
   );
 
   const simPartialClose = useCallback(
@@ -597,29 +635,49 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
       const assetClass = info.source === "futures" ? "future" : info.source === "alpaca" ? "stock" : "forex";
       const multiplier = assetClass === "future" ? 50 : 1;
       const time = replayTime ?? Math.floor(Date.now() / 1000);
-      const result = simClosePosition(simAccount, symbol, qty, price, time, assetClass, multiplier);
-      setSimAccount(result.state);
-      if (result.fill.realized !== 0) {
+
+      let fill;
+      if (copyGroup) {
+        const updated = copyTradeClose(copyGroup, symbol, qty, price, time, assetClass, multiplier);
+        setCopyGroup(updated);
+        setSimAccount(updated.master);
+        // Find the latest fill on master for the popup
+        const fills = updated.master.fills;
+        fill = fills[fills.length - 1];
+      } else {
+        const result = simClosePosition(simAccount, symbol, qty, price, time, assetClass, multiplier);
+        setSimAccount(result.state);
+        fill = result.fill;
+      }
+
+      if (fill && fill.realized !== 0) {
         setTpslResult({
           symbol,
-          kind: result.fill.realized > 0 ? "tp" : "sl",
-          side: result.fill.side === "buy" ? "short" : "long",
-          qty: result.fill.closedQty,
+          kind: fill.realized > 0 ? "tp" : "sl",
+          side: fill.side === "buy" ? "short" : "long",
+          qty: fill.closedQty,
           entry: simAccount.positions.find((p) => p.symbol === symbol)?.avgEntry ?? price,
           exit: price,
-          pnl: result.fill.realized,
+          pnl: fill.realized,
         });
       }
     },
-    [simAccount, price, symbol, replayTime, setTpslResult],
+    [simAccount, price, symbol, replayTime, setTpslResult, copyGroup],
   );
 
   const simFlattenAll = useCallback(() => {
     if (!simAccount || price == null) return;
     const time = replayTime ?? Math.floor(Date.now() / 1000);
-    const newState = simFlatten(simAccount, { [symbol]: price }, time);
-    setSimAccount(newState);
-  }, [simAccount, price, symbol, replayTime]);
+
+    if (copyGroup) {
+      const updated = copyTradeFlatten(copyGroup, { [symbol]: price }, time);
+      setCopyGroup(updated);
+      setSimAccount(updated.master);
+    } else {
+      const newState = simFlatten(simAccount, { [symbol]: price }, time);
+      setSimAccount(newState);
+    }
+  }, [simAccount, price, symbol, replayTime, copyGroup]);
 
   const handleResetSim = useCallback(() => {
     if (!simAccount) return;
@@ -628,7 +686,11 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
       simAccount.challenge,
     );
     setSimAccount(account);
-  }, [simAccount]);
+    if (copyGroup) {
+      const updated = resetCopyGroup(copyGroup);
+      setCopyGroup(updated);
+    }
+  }, [simAccount, copyGroup]);
 
   // Playback clock — appends one bar per tick until history runs out.
   useEffect(() => {
@@ -1233,6 +1295,7 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
             onPartialClose={simPartialClose}
             onFlatten={simFlattenAll}
             challengeMetrics={simAccount.challenge ? simChallengeMetrics(simAccount) : null}
+            copyGroup={copyGroup}
           />
         )}
         {error && (
@@ -1285,6 +1348,7 @@ export function ChartPane({ paneId, defaultSymbol }: ChartPaneProps) {
           onClose={() => setSimCalendarOpen(false)}
           simAccount={simAccount}
           onReset={handleResetSim}
+          copyGroup={copyGroup}
         />
       )}
     </div>

@@ -13,11 +13,20 @@ interface ReplaySetupDialogProps {
   onStart: (config: ReplaySetupConfig) => void;
 }
 
+export interface CopyAccountSetup {
+  name: string;
+  balance: number;
+  multiplier: number;
+  challenge: ChallengeConfig | null;
+}
+
 export interface ReplaySetupConfig {
   startDate: string; // YYYY-MM-DD
   endDate: string;
   startBalance: number;
   challenge: ChallengeConfig | null;
+  /** Copy accounts for multi-account scaling. Empty = single-account mode. */
+  copyAccounts: CopyAccountSetup[];
 }
 
 const presetKeys = Object.keys(CHALLENGE_PRESETS);
@@ -44,6 +53,8 @@ export function ReplaySetupDialog({
   const [customDailyLoss, setCustomDailyLoss] = useState("5000");
   const [customMinDays, setCustomMinDays] = useState("4");
   const [useChallenge, setUseChallenge] = useState(true);
+  const [useCopyTrading, setUseCopyTrading] = useState(false);
+  const [copyAccounts, setCopyAccounts] = useState<{ name: string; balance: string; multiplier: string }[]>([]);
 
   if (!open) return null;
 
@@ -70,11 +81,21 @@ export function ReplaySetupDialog({
       ? (challenge?.startBalance ?? 100_000)
       : Number(customBalance) || 100_000;
 
+    const copies: CopyAccountSetup[] = useCopyTrading
+      ? copyAccounts.map((c) => ({
+          name: c.name || "Copy",
+          balance: Number(c.balance) || balance,
+          multiplier: Number(c.multiplier) || 1,
+          challenge,
+        }))
+      : [];
+
     onStart({
       startDate,
       endDate,
       startBalance: balance,
       challenge,
+      copyAccounts: copies,
     });
   };
 
@@ -241,6 +262,106 @@ export function ReplaySetupDialog({
               onChange={(e) => setCustomBalance(e.target.value)}
               className={sel}
             />
+          </div>
+        )}
+
+        {/* Copy Trading */}
+        <div className="mb-3 flex items-center gap-2">
+          <input
+            type="checkbox"
+            id="rsd-copy"
+            checked={useCopyTrading}
+            onChange={(e) => setUseCopyTrading(e.target.checked)}
+            className="accent-purple-600"
+          />
+          <label htmlFor="rsd-copy" className="text-xs text-neutral-300">
+            Copy trading (simulate multiple accounts scaling up)
+          </label>
+        </div>
+
+        {useCopyTrading && (
+          <div className="mb-3 rounded border border-[#2a2e39] bg-[#0d1117] p-2">
+            <p className="mb-2 text-[10px] text-neutral-500">
+              Add copy accounts that mirror the master. Each account scales the master qty by its multiplier.
+            </p>
+            {copyAccounts.map((ca, i) => (
+              <div key={i} className="mb-1.5 grid grid-cols-[1fr_80px_60px_24px] items-end gap-1">
+                <div>
+                  {i === 0 && <label className={lbl}>Name</label>}
+                  <input
+                    value={ca.name}
+                    onChange={(e) => {
+                      const next = [...copyAccounts];
+                      next[i] = { ...next[i], name: e.target.value };
+                      setCopyAccounts(next);
+                    }}
+                    placeholder={`Copy ${i + 1}`}
+                    className={sel}
+                  />
+                </div>
+                <div>
+                  {i === 0 && <label className={lbl}>Balance</label>}
+                  <input
+                    type="number"
+                    value={ca.balance}
+                    onChange={(e) => {
+                      const next = [...copyAccounts];
+                      next[i] = { ...next[i], balance: e.target.value };
+                      setCopyAccounts(next);
+                    }}
+                    className={sel}
+                  />
+                </div>
+                <div>
+                  {i === 0 && <label className={lbl}>Scale</label>}
+                  <input
+                    type="number"
+                    min="0.1"
+                    step="0.1"
+                    value={ca.multiplier}
+                    onChange={(e) => {
+                      const next = [...copyAccounts];
+                      next[i] = { ...next[i], multiplier: e.target.value };
+                      setCopyAccounts(next);
+                    }}
+                    className={sel}
+                    title="Qty multiplier (1 = same size, 2 = double, 0.5 = half)"
+                  />
+                </div>
+                <button
+                  onClick={() => setCopyAccounts(copyAccounts.filter((_, j) => j !== i))}
+                  className="self-end rounded bg-red-900/50 px-1 py-1.5 text-[10px] text-red-300 hover:bg-red-800"
+                  aria-label="Remove"
+                >
+                  ✕
+                </button>
+              </div>
+            ))}
+            <div className="mt-2 flex gap-2">
+              <button
+                onClick={() =>
+                  setCopyAccounts([...copyAccounts, { name: `Copy ${copyAccounts.length + 1}`, balance: customBalance || "100000", multiplier: "1" }])
+                }
+                className="rounded bg-purple-800/60 px-2 py-1 text-[10px] font-semibold text-purple-200 hover:bg-purple-700"
+              >
+                + Add Account
+              </button>
+              {copyAccounts.length === 0 && (
+                <button
+                  onClick={() => {
+                    const bal = customBalance || "100000";
+                    setCopyAccounts([
+                      { name: "Account 2", balance: bal, multiplier: "1" },
+                      { name: "Account 3", balance: bal, multiplier: "2" },
+                      { name: "Account 4", balance: bal, multiplier: "3" },
+                    ]);
+                  }}
+                  className="rounded bg-neutral-800 px-2 py-1 text-[10px] text-neutral-400 hover:text-white"
+                >
+                  Quick: 3 accounts (1x, 2x, 3x)
+                </button>
+              )}
+            </div>
           </div>
         )}
 

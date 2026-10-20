@@ -2,8 +2,8 @@
 
 import { Fragment, useMemo, useState, type ReactNode } from "react";
 import { cn } from "@/lib/utils";
-import type { SimAccountState, SimDayPnl } from "@/lib/sim-account";
-import { simDailyPnl, simChallengeMetrics } from "@/lib/sim-account";
+import type { SimAccountState, SimDayPnl, CopyTradeGroup } from "@/lib/sim-account";
+import { simDailyPnl, simChallengeMetrics, copyGroupTotalPnl } from "@/lib/sim-account";
 
 const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 const WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
@@ -26,9 +26,11 @@ interface SimPnlCalendarProps {
   onClose: () => void;
   simAccount: SimAccountState;
   onReset: () => void;
+  copyGroup?: CopyTradeGroup | null;
 }
 
-export function SimPnlCalendar({ open, onClose, simAccount, onReset }: SimPnlCalendarProps) {
+export function SimPnlCalendar({ open, onClose, simAccount, onReset, copyGroup }: SimPnlCalendarProps) {
+  const [viewAccount, setViewAccount] = useState<string>("master");
   const [month, setMonth] = useState(() => {
     const now = new Date();
     return now.getFullYear() * 12 + now.getMonth();
@@ -37,8 +39,33 @@ export function SimPnlCalendar({ open, onClose, simAccount, onReset }: SimPnlCal
   const year = Math.floor(month / 12);
   const mo = month % 12;
 
-  const days = useMemo(() => simDailyPnl(simAccount), [simAccount]);
-  const metrics = useMemo(() => simChallengeMetrics(simAccount), [simAccount]);
+  // Resolve which account to show
+  const activeAccount = useMemo(() => {
+    if (!copyGroup || viewAccount === "master") return simAccount;
+    if (viewAccount === "combined") return simAccount; // combined uses merged data
+    const copy = copyGroup.copies.find((c) => c.id === viewAccount);
+    return copy?.state ?? simAccount;
+  }, [simAccount, copyGroup, viewAccount]);
+
+  const days = useMemo(() => {
+    if (viewAccount === "combined" && copyGroup) {
+      // Merge fills from all accounts for combined view
+      const allFills = [
+        ...copyGroup.master.fills,
+        ...copyGroup.copies.flatMap((c) => c.state.fills),
+      ];
+      const merged: SimAccountState = {
+        ...copyGroup.master,
+        fills: allFills,
+        balance: copyGroup.master.balance + copyGroup.copies.reduce((s, c) => s + c.state.balance, 0),
+        startBalance: copyGroup.master.startBalance + copyGroup.copies.reduce((s, c) => s + c.state.startBalance, 0),
+      };
+      return simDailyPnl(merged);
+    }
+    return simDailyPnl(activeAccount);
+  }, [activeAccount, viewAccount, copyGroup]);
+
+  const metrics = useMemo(() => simChallengeMetrics(activeAccount), [activeAccount]);
 
   const byDate = useMemo(() => {
     const map = new Map<string, SimDayPnl>();
@@ -70,7 +97,8 @@ export function SimPnlCalendar({ open, onClose, simAccount, onReset }: SimPnlCal
   const winRate = monthWins + monthLosses > 0 ? (monthWins / (monthWins + monthLosses)) * 100 : 0;
 
   // Overall aggregates
-  const totalPnl = simAccount.balance - simAccount.startBalance;
+  const totalPnl = activeAccount.balance - activeAccount.startBalance;
+  const combinedTotalPnl = copyGroup ? copyGroupTotalPnl(copyGroup) : totalPnl;
   const totalTrades = days.reduce((s, d) => s + d.trades, 0);
 
   // Max cell pnl for heatmap scaling
@@ -110,15 +138,45 @@ export function SimPnlCalendar({ open, onClose, simAccount, onReset }: SimPnlCal
           </div>
         </div>
 
+        {/* Account switcher (copy-trading mode) */}
+        {copyGroup && copyGroup.copies.length > 0 && (
+          <div className="mb-3 flex flex-wrap items-center gap-1">
+            <span className="text-[10px] font-medium text-neutral-500">View:</span>
+            {[
+              { id: "master", label: "Master" },
+              ...copyGroup.copies.map((c) => ({ id: c.id, label: `${c.name} (${c.multiplier}x)` })),
+              { id: "combined", label: "Combined" },
+            ].map((opt) => (
+              <button
+                key={opt.id}
+                onClick={() => setViewAccount(opt.id)}
+                className={cn(
+                  "rounded px-2 py-0.5 text-[10px] font-semibold",
+                  viewAccount === opt.id
+                    ? "bg-purple-700 text-white"
+                    : "bg-neutral-800 text-neutral-400 hover:text-white",
+                )}
+              >
+                {opt.label}
+              </button>
+            ))}
+          </div>
+        )}
+
         {/* Account summary */}
         <div className="mb-4 flex flex-wrap gap-4">
-          <Stat label="Balance">{usd(simAccount.balance)}</Stat>
+          <Stat label="Balance">{usd(activeAccount.balance)}</Stat>
           <Stat label="Total P&L">
             <span className={totalPnl >= 0 ? "text-green-400" : "text-red-400"}>{usd(totalPnl)}</span>
           </Stat>
-          <Stat label="Peak">{usd(simAccount.peakBalance)}</Stat>
+          {copyGroup && viewAccount !== "combined" && (
+            <Stat label="Combined P&L">
+              <span className={combinedTotalPnl >= 0 ? "text-green-400" : "text-red-400"}>{usd(combinedTotalPnl)}</span>
+            </Stat>
+          )}
+          <Stat label="Peak">{usd(activeAccount.peakBalance)}</Stat>
           <Stat label="Drawdown">
-            <span className="text-red-400">{usd(simAccount.peakBalance - simAccount.balance)}</span>
+            <span className="text-red-400">{usd(activeAccount.peakBalance - activeAccount.balance)}</span>
           </Stat>
           <Stat label="Trades">{totalTrades}</Stat>
           <Stat label="Trading Days">{days.length}</Stat>

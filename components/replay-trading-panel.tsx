@@ -6,7 +6,9 @@ import type {
   SimAccountState,
   SimPosition,
   ChallengeMetrics,
+  CopyTradeGroup,
 } from "@/lib/sim-account";
+import { allCopyAccounts, copyGroupTotalPnl, simChallengeMetrics } from "@/lib/sim-account";
 
 interface ReplayTradingPanelProps {
   simAccount: SimAccountState | null;
@@ -18,6 +20,8 @@ interface ReplayTradingPanelProps {
   onPartialClose: (qty: number) => void;
   onFlatten: () => void;
   challengeMetrics: ChallengeMetrics | null;
+  /** Copy-trade group, if multi-account mode is active. */
+  copyGroup: CopyTradeGroup | null;
 }
 
 function usd(n: number): string {
@@ -35,6 +39,7 @@ export function ReplayTradingPanel({
   onPartialClose,
   onFlatten,
   challengeMetrics,
+  copyGroup,
 }: ReplayTradingPanelProps) {
   const [qty, setQty] = useState(1);
   const [partialQty, setPartialQty] = useState(1);
@@ -220,6 +225,51 @@ export function ReplayTradingPanel({
                     </span>
                   </>
                 )}
+              </div>
+            </div>
+          )}
+
+          {/* Multi-account copy-trading summary */}
+          {copyGroup && copyGroup.copies.length > 0 && (
+            <div className="mt-2 rounded border border-purple-900/40 bg-[#0d1117] p-1.5">
+              <p className="mb-1 text-[10px] font-bold text-purple-400">
+                Copy Trading ({copyGroup.copies.length + 1} accounts)
+              </p>
+              <div className="mb-1 grid grid-cols-2 gap-x-2 gap-y-0.5 text-[9px]">
+                <span className="text-neutral-500">Combined P&L</span>
+                <span className={cn("text-right font-mono", copyGroupTotalPnl(copyGroup) >= 0 ? "text-green-400" : "text-red-400")}>
+                  {usd(copyGroupTotalPnl(copyGroup))}
+                </span>
+              </div>
+              <div className="max-h-28 overflow-y-auto">
+                {allCopyAccounts(copyGroup).map((acct) => {
+                  const pnl = acct.state.balance - acct.state.startBalance;
+                  const pos = acct.state.positions.find((p) => p.symbol === symbol);
+                  const acctMetrics = acct.state.challenge ? simChallengeMetrics(acct.state) : null;
+                  return (
+                    <div key={acct.id} className="flex items-center justify-between border-t border-[#1a1e29] py-0.5 first:border-t-0">
+                      <div className="flex items-center gap-1">
+                        <span className="text-[9px] text-neutral-400">
+                          {acct.name}
+                          {acct.id !== "master" && (
+                            <span className="text-purple-500"> {acct.multiplier}x</span>
+                          )}
+                        </span>
+                        {pos && (
+                          <span className={cn("text-[8px]", pos.side === "long" ? "text-green-500" : "text-red-500")}>
+                            {pos.side === "long" ? "L" : "S"}{pos.qty}
+                          </span>
+                        )}
+                        {acctMetrics?.passed && (
+                          <span className="text-[8px] text-green-400">PASS</span>
+                        )}
+                      </div>
+                      <span className={cn("font-mono text-[9px]", pnl >= 0 ? "text-green-400" : "text-red-400")}>
+                        {pnl >= 0 ? "+" : ""}{usd(pnl)}
+                      </span>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}

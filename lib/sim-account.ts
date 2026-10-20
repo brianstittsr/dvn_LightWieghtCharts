@@ -114,6 +114,259 @@ export const CHALLENGE_PRESETS: Record<string, ChallengeConfig> = {
   },
 };
 
+// ── Multi-account copy-trading ───────────────────────────────────
+
+/** A named sub-account inside a copy-trade group. */
+export interface CopyAccount {
+  id: string;
+  name: string;
+  /** Qty multiplier relative to the master order. 1 = same size, 2 = double, 0.5 = half. */
+  multiplier: number;
+  state: SimAccountState;
+}
+
+/** A group of accounts that receive copy-traded fills from a master account. */
+export interface CopyTradeGroup {
+  id: string;
+  name: string;
+  /** The master (lead) account — trades are placed here first. */
+  master: SimAccountState;
+  /** Copy accounts that mirror the master's trades with optional scaling. */
+  copies: CopyAccount[];
+  createdAt: string;
+}
+
+const COPY_GROUP_KEY = "sim-copy-group";
+
+/** Load the copy-trade group from localStorage. */
+export function loadCopyGroup(): CopyTradeGroup | null {
+  try {
+    const raw = localStorage.getItem(COPY_GROUP_KEY);
+    if (!raw) return null;
+    return JSON.parse(raw) as CopyTradeGroup;
+  } catch {
+    return null;
+  }
+}
+
+/** Save the copy-trade group to localStorage. */
+export function saveCopyGroup(group: CopyTradeGroup): void {
+  localStorage.setItem(COPY_GROUP_KEY, JSON.stringify(group));
+}
+
+/** Create a new copy-trade group. */
+export function createCopyGroup(
+  name: string,
+  masterBalance: number,
+  masterChallenge: ChallengeConfig | null,
+  copies: { name: string; balance: number; multiplier: number; challenge: ChallengeConfig | null }[],
+): CopyTradeGroup {
+  const group: CopyTradeGroup = {
+    id: genId(),
+    name,
+    master: defaultState(masterBalance, masterChallenge),
+    copies: copies.map((c) => ({
+      id: genId(),
+      name: c.name,
+      multiplier: c.multiplier,
+      state: defaultState(c.balance, c.challenge),
+    })),
+    createdAt: new Date().toISOString(),
+  };
+  saveCopyGroup(group);
+  return group;
+}
+
+/** Add a copy account to an existing group. */
+export function addCopyAccount(
+  group: CopyTradeGroup,
+  name: string,
+  balance: number,
+  multiplier: number,
+  challenge: ChallengeConfig | null,
+): CopyTradeGroup {
+  const newGroup: CopyTradeGroup = {
+    ...group,
+    copies: [
+      ...group.copies,
+      {
+        id: genId(),
+        name,
+        multiplier,
+        state: defaultState(balance, challenge),
+      },
+    ],
+  };
+  saveCopyGroup(newGroup);
+  return newGroup;
+}
+
+/** Remove a copy account by id. */
+export function removeCopyAccount(
+  group: CopyTradeGroup,
+  accountId: string,
+): CopyTradeGroup {
+  const newGroup: CopyTradeGroup = {
+    ...group,
+    copies: group.copies.filter((c) => c.id !== accountId),
+  };
+  saveCopyGroup(newGroup);
+  return newGroup;
+}
+
+/**
+ * Execute a trade on the master and copy it to all linked accounts.
+ * Returns the updated group.
+ */
+export function copyTradeOpen(
+  group: CopyTradeGroup,
+  symbol: string,
+  side: "buy" | "sell",
+  masterQty: number,
+  price: number,
+  time: number,
+  assetClass: "stock" | "future" | "forex" = "stock",
+  multiplier = 1,
+): CopyTradeGroup {
+  // Execute on master
+  const masterResult = simOpenPosition(
+    group.master, symbol, side, masterQty, price, time, assetClass, multiplier,
+  );
+
+  // Execute on each copy account with scaled qty
+  const newCopies = group.copies.map((copy) => {
+    const scaledQty = Math.max(1, Math.round(masterQty * copy.multiplier));
+    const result = simOpenPosition(
+      copy.state, symbol, side, scaledQty, price, time, assetClass, multiplier,
+    );
+    return { ...copy, state: result.state };
+  });
+
+  const newGroup: CopyTradeGroup = {
+    ...group,
+    master: masterResult.state,
+    copies: newCopies,
+  };
+  saveCopyGroup(newGroup);
+  return newGroup;
+}
+
+/**
+ * Close a position on the master and copy to all linked accounts.
+ */
+export function copyTradeClose(
+  group: CopyTradeGroup,
+  symbol: string,
+  masterCloseQty: number,
+  exitPrice: number,
+  time: number,
+  assetClass: "stock" | "future" | "forex" = "stock",
+  multiplier = 1,
+): CopyTradeGroup {
+  const masterResult = simClosePosition(
+    group.master, symbol, masterCloseQty, exitPrice, time, assetClass, multiplier,
+  );
+
+  const newCopies = group.copies.map((copy) => {
+    // Scale close qty proportionally — close the same fraction of position
+    const masterPos = group.master.positions.find((p) => p.symbol === symbol);
+    const copyPos = copy.state.positions.find((p) => p.symbol === symbol);
+    if (!copyPos) return copy;
+
+    let scaledClose: number;
+    if (masterPos && masterPos.qty > 0) {
+      // Close the same fraction as master
+      const fraction = masterCloseQty / (masterPos.qty + masterCloseQty); // fraction of original position being closed
+      scaledClose = Math.max(1, Math.round(copyPos.qty * fraction));
+    } else {
+      // Master fully closed — flatten copy too
+      scaledClose = copyPos.qty;
+    }
+
+    const result = simClosePosition(
+      copy.state, symbol, scaledClose, exitPrice, time, assetClass, multiplier,
+    );
+    return { ...copy, state: result.state };
+  });
+
+  const newGroup: CopyTradeGroup = {
+    ...group,
+    master: masterResult.state,
+    copies: newCopies,
+  };
+  saveCopyGroup(newGroup);
+  return newGroup;
+}
+
+/** Flatten all positions across master and all copies. */
+export function copyTradeFlatten(
+  group: CopyTradeGroup,
+  priceMap: Record<string, number>,
+  time: number,
+): CopyTradeGroup {
+  const newMaster = simFlatten(group.master, priceMap, time);
+  const newCopies = group.copies.map((copy) => ({
+    ...copy,
+    state: simFlatten(copy.state, priceMap, time),
+  }));
+  const newGroup: CopyTradeGroup = { ...group, master: newMaster, copies: newCopies };
+  saveCopyGroup(newGroup);
+  return newGroup;
+}
+
+/** Reset a specific copy account. */
+export function resetCopyAccount(
+  group: CopyTradeGroup,
+  accountId: string,
+): CopyTradeGroup {
+  const newGroup: CopyTradeGroup = {
+    ...group,
+    copies: group.copies.map((c) =>
+      c.id === accountId
+        ? { ...c, state: defaultState(c.state.startBalance, c.state.challenge) }
+        : c,
+    ),
+  };
+  saveCopyGroup(newGroup);
+  return newGroup;
+}
+
+/** Reset the entire group (master + all copies). */
+export function resetCopyGroup(group: CopyTradeGroup): CopyTradeGroup {
+  const newGroup: CopyTradeGroup = {
+    ...group,
+    master: defaultState(group.master.startBalance, group.master.challenge),
+    copies: group.copies.map((c) => ({
+      ...c,
+      state: defaultState(c.state.startBalance, c.state.challenge),
+    })),
+  };
+  saveCopyGroup(newGroup);
+  return newGroup;
+}
+
+/** Aggregate P&L across master + all copy accounts. */
+export function copyGroupTotalPnl(group: CopyTradeGroup): number {
+  const masterPnl = group.master.balance - group.master.startBalance;
+  const copiesPnl = group.copies.reduce(
+    (s, c) => s + (c.state.balance - c.state.startBalance), 0,
+  );
+  return masterPnl + copiesPnl;
+}
+
+/** Total balance across all accounts. */
+export function copyGroupTotalBalance(group: CopyTradeGroup): number {
+  return group.master.balance + group.copies.reduce((s, c) => s + c.state.balance, 0);
+}
+
+/** Get all accounts as a flat list (master first, then copies). */
+export function allCopyAccounts(group: CopyTradeGroup): { id: string; name: string; multiplier: number; state: SimAccountState }[] {
+  return [
+    { id: "master", name: "Master", multiplier: 1, state: group.master },
+    ...group.copies,
+  ];
+}
+
 const SIM_KEY = "sim-account";
 const etFmt = new Intl.DateTimeFormat("en-CA", {
   timeZone: "America/New_York",
