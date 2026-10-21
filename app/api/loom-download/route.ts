@@ -21,6 +21,18 @@ const querySchema = z.object({
   progress: z.coerce.boolean().optional(),
 });
 
+function mp4Filename(title: string | null | undefined, id: string): string {
+  const base = (title ?? `loom-${id}`).replace(/[\\/:*?"<>|]/g, "").trim() || `loom-${id}`;
+  return `${base.slice(0, 120)}.mp4`;
+}
+
+/** RFC 5987 Content-Disposition — ASCII fallback + UTF-8 filename* for unicode titles. */
+function disposition(title: string | null | undefined, id: string): string {
+  const name = mp4Filename(title, id);
+  const ascii = name.replace(/[^\x20-\x7e]/g, "_");
+  return `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(name)}`;
+}
+
 export async function GET(req: NextRequest) {
   const parsed = querySchema.safeParse({
     url: req.nextUrl.searchParams.get("url"),
@@ -84,7 +96,7 @@ export async function GET(req: NextRequest) {
         p.done("download", `${(buf.byteLength / 1024 / 1024).toFixed(1)} MB`);
         p.done("read");
 
-        sendFile(p.send, buf, `loom-${id}.mp4`, "video/mp4");
+        sendFile(p.send, buf, mp4Filename(video.title, id), "video/mp4");
         p.send({ type: "done" });
       } catch (e) {
         p.fail("download", e instanceof Error ? e.message : "Download failed");
@@ -119,7 +131,7 @@ export async function GET(req: NextRequest) {
       return new NextResponse(new Uint8Array(buf), {
         headers: {
           "Content-Type": "video/mp4",
-          "Content-Disposition": `attachment; filename="loom-${id}.mp4"`,
+          "Content-Disposition": disposition(video.title, id),
           "Content-Length": String(buf.byteLength),
         },
       });
@@ -143,7 +155,7 @@ export async function GET(req: NextRequest) {
 
   const headers = new Headers({
     "Content-Type": upstream.headers.get("content-type") ?? "video/mp4",
-    "Content-Disposition": `attachment; filename="loom-${id}.mp4"`,
+    "Content-Disposition": disposition(video.title, id),
   });
   const len = upstream.headers.get("content-length");
   if (len) headers.set("Content-Length", len);
