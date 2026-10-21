@@ -1,6 +1,13 @@
+import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { promisify } from "node:util";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { extractLoomVideoId, loomVideoTitle, resolveLoomVideo } from "@/lib/loom";
+
+const execFileAsync = promisify(execFile);
 
 /**
  * Loom → transcript → Markdown.
@@ -112,8 +119,63 @@ async function transcribeDeepgram(videoUrl: string): Promise<TranscriptResult> {
   return { text, segments, engine: "deepgram" };
 }
 
-// ── Whisper (download + upload, 25 MB cap) ───────────────────────────────────
+// ── Whisper (audio extraction + chunking, 25 MB cap per chunk) ───────────────
 
+/** Call Whisper on one audio file; returns text + timestamped segments. */
+async function whisperOnce(
+  buf: Buffer,
+  filename: string,
+  mime: string,
+): Promise<{ text: string; segments?: Segment[] }> {
+  const form = new FormData();
+  form.append("file", new Blob([new Uint8Array(buf)], { type: mime }), filename);
+  form.append("model", "whisper-1");
+  form.append("response_format", "verbose_json");
+
+  const res = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+    method: "POST",
+    headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
+    body: form,
+  });
+  if (!res.ok) {
+    const detail = await res.text().catch(() => "");
+    throw new Error(`Whisper ${res.status}: ${detail.slice(0, 300)}`);
+  }
+  return res.json() as Promise<{ text: string; segments?: Segment[] }>;
+}
+
+/** Run ffmpeg; resolves on exit 0, rejects with stderr tail otherwise. */
+async function ffmpeg(args: string[]): Promise<void> {
+  const ffmpegPath = (await import("ffmpeg-static")).default;
+  if (!ffmpegPath) throw new Error("ffmpeg binary not available on this platform");
+  try {
+    await execFileAsync(ffmpegPath, args, { maxBuffer: 8 * 1024 * 1024 });
+  } catch (e) {
+    const err = e as { stderr?: string; message: string };
+    throw new Error(`ffmpeg failed: ${(err.stderr ?? err.message).slice(-300)}`);
+  }
+}
+
+/** Parse "Duration: HH:MM:SS.xx" from ffmpeg -i stderr output. */
+async function mediaDurationSec(file: string): Promise<number> {
+  const ffmpegPath = (await import("ffmpeg-static")).default;
+  if (!ffmpegPath) return 0;
+  try {
+    await execFileAsync(ffmpegPath, ["-i", file]);
+    return 0;
+  } catch (e) {
+    const stderr = (e as { stderr?: string }).stderr ?? "";
+    const m = stderr.match(/Duration:\s*(\d+):(\d+):(\d+(?:\.\d+)?)/);
+    if (!m) return 0;
+    return +m[1] * 3600 + +m[2] * 60 + parseFloat(m[3]);
+  }
+}
+
+/**
+ * Download → extract audio → transcribe. If the compressed audio still exceeds
+ * Whisper's 25 MB cap, split it into ~20-minute chunks, transcribe each with
+ * offset timestamps, and stitch the results into a single transcript.
+ */
 async function transcribeWhisper(videoUrl: string, id: string): Promise<TranscriptResult> {
   const videoRes = await fetch(videoUrl, {
     headers: { "User-Agent": "Mozilla/5.0" },
@@ -121,44 +183,66 @@ async function transcribeWhisper(videoUrl: string, id: string): Promise<Transcri
   if (!videoRes.ok || !videoRes.body) {
     throw new Error(`Loom CDN returned ${videoRes.status}`);
   }
-  const declaredLen = Number(videoRes.headers.get("content-length") ?? 0);
-  if (declaredLen > WHISPER_LIMIT) {
-    throw Object.assign(
-      new Error("Video is over Whisper's 25 MB limit — set DEEPGRAM_API_KEY for URL-based transcription with no size cap"),
-      { status: 413 },
-    );
-  }
-  const videoBuf = Buffer.from(await videoRes.arrayBuffer());
-  if (videoBuf.byteLength > WHISPER_LIMIT) {
-    throw Object.assign(
-      new Error("Video is over Whisper's 25 MB limit — set DEEPGRAM_API_KEY for URL-based transcription with no size cap"),
-      { status: 413 },
-    );
-  }
 
-  const form = new FormData();
-  form.append(
-    "file",
-    new Blob([new Uint8Array(videoBuf)], { type: "video/mp4" }),
-    `loom-${id}.mp4`,
-  );
-  form.append("model", "whisper-1");
-  form.append("response_format", "verbose_json");
+  const dir = await mkdtemp(join(tmpdir(), "loom-"));
+  try {
+    const mp4Path = join(dir, `${id}.mp4`);
+    const mp3Path = join(dir, `${id}.mp3`);
+    await writeFile(mp4Path, Buffer.from(await videoRes.arrayBuffer()));
 
-  const whisperRes = await fetch("https://api.openai.com/v1/audio/transcriptions", {
-    method: "POST",
-    headers: { Authorization: `Bearer ${process.env.OPENAI_API_KEY}` },
-    body: form,
-  });
-  if (!whisperRes.ok) {
-    const detail = await whisperRes.text().catch(() => "");
-    throw new Error(`Whisper ${whisperRes.status}: ${detail.slice(0, 300)}`);
+    // Extract mono 16 kHz mp3 — speech needs nothing more; ~0.12 MB/min.
+    // A 25 MB video typically yields 2–4 MB of audio, avoiding any chunking.
+    await ffmpeg([
+      "-y", "-i", mp4Path, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", mp3Path,
+    ]);
+
+    const mp3Size = (await stat(mp3Path)).size;
+    if (mp3Size === 0) throw new Error("Audio extraction produced an empty file — video may have no audio track");
+
+    if (mp3Size <= WHISPER_LIMIT) {
+      const r = await whisperOnce(await readFile(mp3Path), `loom-${id}.mp3`, "audio/mpeg");
+      return { text: r.text ?? "", segments: r.segments, engine: "whisper" };
+    }
+
+    // Still too large — chunk by duration (mp3 stream copy is sample-accurate).
+    const duration = await mediaDurationSec(mp3Path);
+    if (duration <= 0) {
+      throw Object.assign(
+        new Error("Extracted audio exceeds 25 MB and duration could not be probed — set DEEPGRAM_API_KEY for unlimited URL transcription"),
+        { status: 413 },
+      );
+    }
+    const CHUNK_SEC = 1200; // ~2.4 MB per chunk at 32 kbps
+    const chunks = Math.ceil(duration / CHUNK_SEC);
+    const texts: string[] = [];
+    const segments: Segment[] = [];
+
+    for (let i = 0; i < chunks; i++) {
+      const start = i * CHUNK_SEC;
+      const len = Math.min(CHUNK_SEC, duration - start);
+      const chunkPath = join(dir, `chunk-${i}.mp3`);
+      await ffmpeg(["-y", "-ss", String(start), "-t", String(len), "-i", mp3Path, "-c", "copy", chunkPath]);
+
+      const size = (await stat(chunkPath)).size;
+      if (size > WHISPER_LIMIT) {
+        throw Object.assign(
+          new Error(`Audio chunk ${i + 1}/${chunks} still exceeds 25 MB — set DEEPGRAM_API_KEY for unlimited URL transcription`),
+          { status: 413 },
+        );
+      }
+      if (size === 0) continue;
+
+      const r = await whisperOnce(await readFile(chunkPath), `loom-${id}-part${i + 1}.mp3`, "audio/mpeg");
+      if (r.text) texts.push(r.text.trim());
+      for (const s of r.segments ?? []) {
+        segments.push({ start: s.start + start, text: s.text });
+      }
+    }
+
+    return { text: texts.join(" "), segments, engine: "whisper" };
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
-  const data = (await whisperRes.json()) as {
-    text?: string;
-    segments?: Segment[];
-  };
-  return { text: data.text ?? "", segments: data.segments, engine: "whisper" };
 }
 
 // ── Route ────────────────────────────────────────────────────────────────────
