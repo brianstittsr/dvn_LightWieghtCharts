@@ -1,7 +1,19 @@
 /**
  * Shared Loom video resolution — extracts the video id from a share URL and
- * resolves the downloadable MP4 through three fallback strategies.
+ * resolves the downloadable MP4 through Loom's GraphQL API.
+ *
+ * The working path (verified Oct 2026):
+ *   Query.getVideo(id).nullableRawCdnUrl(acceptableMimes: [MP4]) { url }
+ * returns a signed CloudFront MP4 URL — no auth needed for public videos.
+ * Fallback: scrape the share page for a transcoded mp4 link.
  */
+
+export interface LoomVideoInfo {
+  /** Signed CloudFront mp4 URL. */
+  url: string;
+  /** Video title, if the API returned it. */
+  title: string | null;
+}
 
 /** Extract the 32-char video id from any Loom share/embed URL. */
 export function extractLoomVideoId(url: string): string | null {
@@ -9,22 +21,7 @@ export function extractLoomVideoId(url: string): string | null {
   return m?.[1] ?? null;
 }
 
-async function resolveViaSessionsApi(id: string): Promise<string | null> {
-  const res = await fetch(`https://www.loom.com/api/campaigns/sessions/${id}`, {
-    method: "POST",
-    headers: {
-      Accept: "application/json",
-      "Content-Type": "application/x-www-form-urlencoded",
-      Origin: "https://www.loom.com",
-      Referer: `https://www.loom.com/share/${id}`,
-    },
-  });
-  if (!res.ok) return null;
-  const data = (await res.json().catch(() => null)) as { url?: string } | null;
-  return data?.url ?? null;
-}
-
-async function resolveViaGraphql(id: string): Promise<string | null> {
+async function resolveViaGraphql(id: string): Promise<LoomVideoInfo | null> {
   const res = await fetch("https://www.loom.com/graphql", {
     method: "POST",
     headers: {
@@ -33,28 +30,39 @@ async function resolveViaGraphql(id: string): Promise<string | null> {
       Origin: "https://www.loom.com",
       Referer: `https://www.loom.com/share/${id}`,
       "apollographql-client-name": "loom-web",
-      "x-loom-request-source": "loom_web/unknown",
+      "x-loom-request-source": "loom_web_0.0.0",
     },
     body: JSON.stringify({
-      operationName: "GetVideoSource",
+      operationName: "GetVideo",
       variables: { videoId: id },
-      query: `query GetVideoSource($videoId: ID!) {
+      query: `query GetVideo($videoId: ID!) {
         getVideo(id: $videoId) {
-          id
-          source { raw download }
+          ... on RegularUserVideo {
+            name
+            nullableRawCdnUrl(acceptableMimes: [MP4]) { url }
+          }
+          ... on PrivateVideo { __typename }
+          ... on VideoPasswordMissingOrIncorrect { __typename }
         }
       }`,
     }),
   });
   if (!res.ok) return null;
   const data = (await res.json().catch(() => null)) as {
-    data?: { getVideo?: { source?: { raw?: string; download?: string } } };
+    data?: {
+      getVideo?: {
+        name?: string;
+        nullableRawCdnUrl?: { url?: string } | null;
+      } | null;
+    };
   } | null;
-  const src = data?.data?.getVideo?.source;
-  return src?.download ?? src?.raw ?? null;
+  const video = data?.data?.getVideo;
+  const url = video?.nullableRawCdnUrl?.url;
+  if (!url) return null;
+  return { url, title: video?.name?.trim() || null };
 }
 
-async function resolveViaPageScrape(id: string): Promise<string | null> {
+async function resolveViaPageScrape(id: string): Promise<LoomVideoInfo | null> {
   const res = await fetch(`https://www.loom.com/share/${id}`, {
     headers: {
       "User-Agent":
@@ -67,13 +75,17 @@ async function resolveViaPageScrape(id: string): Promise<string | null> {
   const m =
     html.match(/https:\/\/cdn\.loom\.com\/sessions\/transcoded\/[^"\\]+\.mp4[^"\\]*/i) ??
     html.match(/"url"\s*:\s*"(https:[^"]+\.mp4[^"]*)"/i);
-  return m ? m[0].replace(/^"url"\s*:\s*"/, "").replace(/\\u0026/g, "&") : null;
+  const url = m ? m[0].replace(/^"url"\s*:\s*"/, "").replace(/\\u0026/g, "&") : null;
+  const t = html.match(/<title>([^<]+)<\/title>/i)?.[1]?.replace(/ \| Loom$/i, "").trim();
+  return url ? { url, title: t || null } : null;
 }
 
-/** Resolve a Loom share URL to a downloadable MP4 URL, or null. */
-export async function resolveLoomVideo(id: string): Promise<string | null> {
+/**
+ * Resolve a Loom share URL to a downloadable MP4 + title, or null.
+ * Only works for publicly-shared videos.
+ */
+export async function resolveLoomVideo(id: string): Promise<LoomVideoInfo | null> {
   return (
-    (await resolveViaSessionsApi(id).catch(() => null)) ??
     (await resolveViaGraphql(id).catch(() => null)) ??
     (await resolveViaPageScrape(id).catch(() => null))
   );

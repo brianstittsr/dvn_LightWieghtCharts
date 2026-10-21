@@ -35,9 +35,9 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const videoUrl = await resolveLoomVideo(id);
+  const video = await resolveLoomVideo(id);
 
-  if (!videoUrl) {
+  if (!video) {
     return NextResponse.json(
       {
         error:
@@ -48,10 +48,10 @@ export async function GET(req: NextRequest) {
   }
 
   if (parsed.data.raw) {
-    return NextResponse.json({ data: { id, url: videoUrl } });
+    return NextResponse.json({ data: { id, url: video.url, title: video.title } });
   }
 
-  const upstream = await fetch(videoUrl, {
+  const upstream = await fetch(video.url, {
     headers: { "User-Agent": "Mozilla/5.0" },
   });
   if (!upstream.ok || !upstream.body) {

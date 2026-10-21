@@ -90,8 +90,8 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const videoUrl = await resolveLoomVideo(id);
-  if (!videoUrl) {
+  const video = await resolveLoomVideo(id);
+  if (!video) {
     return NextResponse.json(
       {
         error:
@@ -102,7 +102,7 @@ export async function GET(req: NextRequest) {
   }
 
   // Download the mp4 into memory, enforcing Whisper's size limit.
-  const videoRes = await fetch(videoUrl, {
+  const videoRes = await fetch(video.url, {
     headers: { "User-Agent": "Mozilla/5.0" },
   });
   if (!videoRes.ok || !videoRes.body) {
@@ -154,7 +154,7 @@ export async function GET(req: NextRequest) {
     segments?: WhisperSegment[];
   };
 
-  const title = await loomVideoTitle(id).catch(() => null);
+  const title = video.title ?? (await loomVideoTitle(id).catch(() => null));
   const markdown = toMarkdown(
     title,
     parsed.data.url,
