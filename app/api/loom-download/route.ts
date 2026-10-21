@@ -1,6 +1,8 @@
+import { readFile, rm } from "node:fs/promises";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { extractLoomVideoId, resolveLoomVideo } from "@/lib/loom";
+import { downloadHlsToMp4 } from "@/lib/loom-hls";
 
 /**
  * Loom video downloader.
@@ -48,7 +50,28 @@ export async function GET(req: NextRequest) {
   }
 
   if (parsed.data.raw) {
-    return NextResponse.json({ data: { id, url: video.url, title: video.title } });
+    return NextResponse.json({ data: { id, url: video.url, title: video.title, kind: video.kind } });
+  }
+
+  // HLS-only video — download + remux to mp4 via ffmpeg, then stream.
+  if (video.kind === "hls") {
+    try {
+      const { dir, file } = await downloadHlsToMp4(video.url);
+      const buf = await readFile(file);
+      await rm(dir, { recursive: true, force: true }).catch(() => {});
+      return new NextResponse(new Uint8Array(buf), {
+        headers: {
+          "Content-Type": "video/mp4",
+          "Content-Disposition": `attachment; filename="loom-${id}.mp4"`,
+          "Content-Length": String(buf.byteLength),
+        },
+      });
+    } catch (e) {
+      return NextResponse.json(
+        { error: `HLS download failed: ${e instanceof Error ? e.message : e}` },
+        { status: 502 },
+      );
+    }
   }
 
   const upstream = await fetch(video.url, {

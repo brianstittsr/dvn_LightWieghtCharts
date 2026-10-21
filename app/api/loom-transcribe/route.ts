@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { extractLoomVideoId, loomVideoTitle, resolveLoomVideo } from "@/lib/loom";
+import { hlsAudioToMp3 } from "@/lib/loom-hls";
 
 const execFileAsync = promisify(execFile);
 
@@ -172,6 +173,57 @@ async function mediaDurationSec(file: string): Promise<number> {
 }
 
 /**
+ * Transcribe a local mp3 with Whisper, chunking into ~20-minute segments
+ * when the file exceeds the 25 MB cap. Segment timestamps are offset back
+ * to absolute positions so the merged transcript reads continuously.
+ */
+async function whisperChunked(mp3Path: string, dir: string, id: string): Promise<TranscriptResult> {
+  const mp3Size = (await stat(mp3Path)).size;
+  if (mp3Size === 0) throw new Error("Audio extraction produced an empty file — video may have no audio track");
+
+  if (mp3Size <= WHISPER_LIMIT) {
+    const r = await whisperOnce(await readFile(mp3Path), `loom-${id}.mp3`, "audio/mpeg");
+    return { text: r.text ?? "", segments: r.segments, engine: "whisper" };
+  }
+
+  const duration = await mediaDurationSec(mp3Path);
+  if (duration <= 0) {
+    throw Object.assign(
+      new Error("Extracted audio exceeds 25 MB and duration could not be probed — set DEEPGRAM_API_KEY for unlimited URL transcription"),
+      { status: 413 },
+    );
+  }
+  const CHUNK_SEC = 1200; // ~2.4 MB per chunk at 32 kbps
+  const chunks = Math.ceil(duration / CHUNK_SEC);
+  const texts: string[] = [];
+  const segments: Segment[] = [];
+
+  for (let i = 0; i < chunks; i++) {
+    const start = i * CHUNK_SEC;
+    const len = Math.min(CHUNK_SEC, duration - start);
+    const chunkPath = join(dir, `chunk-${i}.mp3`);
+    await ffmpeg(["-y", "-ss", String(start), "-t", String(len), "-i", mp3Path, "-c", "copy", chunkPath]);
+
+    const size = (await stat(chunkPath)).size;
+    if (size > WHISPER_LIMIT) {
+      throw Object.assign(
+        new Error(`Audio chunk ${i + 1}/${chunks} still exceeds 25 MB — set DEEPGRAM_API_KEY for unlimited URL transcription`),
+        { status: 413 },
+      );
+    }
+    if (size === 0) continue;
+
+    const r = await whisperOnce(await readFile(chunkPath), `loom-${id}-part${i + 1}.mp3`, "audio/mpeg");
+    if (r.text) texts.push(r.text.trim());
+    for (const s of r.segments ?? []) {
+      segments.push({ start: s.start + start, text: s.text });
+    }
+  }
+
+  return { text: texts.join(" "), segments, engine: "whisper" };
+}
+
+/**
  * Download → extract audio → transcribe. If the compressed audio still exceeds
  * Whisper's 25 MB cap, split it into ~20-minute chunks, transcribe each with
  * offset timestamps, and stitch the results into a single transcript.
@@ -196,50 +248,20 @@ async function transcribeWhisper(videoUrl: string, id: string): Promise<Transcri
       "-y", "-i", mp4Path, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", mp3Path,
     ]);
 
-    const mp3Size = (await stat(mp3Path)).size;
-    if (mp3Size === 0) throw new Error("Audio extraction produced an empty file — video may have no audio track");
+    return await whisperChunked(mp3Path, dir, id);
+  } finally {
+    await rm(dir, { recursive: true, force: true }).catch(() => {});
+  }
+}
 
-    if (mp3Size <= WHISPER_LIMIT) {
-      const r = await whisperOnce(await readFile(mp3Path), `loom-${id}.mp3`, "audio/mpeg");
-      return { text: r.text ?? "", segments: r.segments, engine: "whisper" };
-    }
-
-    // Still too large — chunk by duration (mp3 stream copy is sample-accurate).
-    const duration = await mediaDurationSec(mp3Path);
-    if (duration <= 0) {
-      throw Object.assign(
-        new Error("Extracted audio exceeds 25 MB and duration could not be probed — set DEEPGRAM_API_KEY for unlimited URL transcription"),
-        { status: 413 },
-      );
-    }
-    const CHUNK_SEC = 1200; // ~2.4 MB per chunk at 32 kbps
-    const chunks = Math.ceil(duration / CHUNK_SEC);
-    const texts: string[] = [];
-    const segments: Segment[] = [];
-
-    for (let i = 0; i < chunks; i++) {
-      const start = i * CHUNK_SEC;
-      const len = Math.min(CHUNK_SEC, duration - start);
-      const chunkPath = join(dir, `chunk-${i}.mp3`);
-      await ffmpeg(["-y", "-ss", String(start), "-t", String(len), "-i", mp3Path, "-c", "copy", chunkPath]);
-
-      const size = (await stat(chunkPath)).size;
-      if (size > WHISPER_LIMIT) {
-        throw Object.assign(
-          new Error(`Audio chunk ${i + 1}/${chunks} still exceeds 25 MB — set DEEPGRAM_API_KEY for unlimited URL transcription`),
-          { status: 413 },
-        );
-      }
-      if (size === 0) continue;
-
-      const r = await whisperOnce(await readFile(chunkPath), `loom-${id}-part${i + 1}.mp3`, "audio/mpeg");
-      if (r.text) texts.push(r.text.trim());
-      for (const s of r.segments ?? []) {
-        segments.push({ start: s.start + start, text: s.text });
-      }
-    }
-
-    return { text: texts.join(" "), segments, engine: "whisper" };
+/**
+ * HLS variant: pull just the audio stream's playlist (signature-propagated)
+ * and encode straight to mp3 — the video track never gets downloaded.
+ */
+async function transcribeWhisperHls(masterUrl: string, id: string): Promise<TranscriptResult> {
+  const { dir, file } = await hlsAudioToMp3(masterUrl);
+  try {
+    return await whisperChunked(file, dir, `${id}-hls`);
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
@@ -289,9 +311,23 @@ export async function GET(req: NextRequest) {
 
   let result: TranscriptResult;
   try {
-    result = useDeepgram
-      ? await transcribeDeepgram(video.url)
-      : await transcribeWhisper(video.url, id);
+    try {
+      result = useDeepgram
+        ? await transcribeDeepgram(video.url)
+        : video.kind === "hls"
+          ? await transcribeWhisperHls(video.url, id)
+          : await transcribeWhisper(video.url, id);
+    } catch (first) {
+      // Deepgram can't ingest HLS playlists — fall back to Whisper's local
+      // audio extraction when both keys are configured.
+      if (useDeepgram && useWhisper) {
+        result = video.kind === "hls"
+          ? await transcribeWhisperHls(video.url, id)
+          : await transcribeWhisper(video.url, id);
+      } else {
+        throw first;
+      }
+    }
   } catch (e) {
     const err = e as Error & { status?: number };
     return NextResponse.json(

@@ -9,8 +9,10 @@
  */
 
 export interface LoomVideoInfo {
-  /** Signed CloudFront mp4 URL. */
+  /** Signed URL — either an .mp4 file or an HLS (.m3u8) master playlist. */
   url: string;
+  /** "mp4" for direct file, "hls" for adaptive stream needing remux. */
+  kind: "mp4" | "hls";
   /** Video title, if the API returned it. */
   title: string | null;
 }
@@ -39,7 +41,7 @@ async function resolveViaGraphql(id: string): Promise<LoomVideoInfo | null> {
         getVideo(id: $videoId) {
           ... on RegularUserVideo {
             name
-            nullableRawCdnUrl(acceptableMimes: [MP4]) { url }
+            nullableRawCdnUrl(acceptableMimes: [MP4, M3U8]) { url }
           }
           ... on PrivateVideo { __typename }
           ... on VideoPasswordMissingOrIncorrect { __typename }
@@ -59,7 +61,11 @@ async function resolveViaGraphql(id: string): Promise<LoomVideoInfo | null> {
   const video = data?.data?.getVideo;
   const url = video?.nullableRawCdnUrl?.url;
   if (!url) return null;
-  return { url, title: video?.name?.trim() || null };
+  return {
+    url,
+    kind: url.includes(".m3u8") ? "hls" : "mp4",
+    title: video?.name?.trim() || null,
+  };
 }
 
 async function resolveViaPageScrape(id: string): Promise<LoomVideoInfo | null> {
@@ -77,7 +83,9 @@ async function resolveViaPageScrape(id: string): Promise<LoomVideoInfo | null> {
     html.match(/"url"\s*:\s*"(https:[^"]+\.mp4[^"]*)"/i);
   const url = m ? m[0].replace(/^"url"\s*:\s*"/, "").replace(/\\u0026/g, "&") : null;
   const t = html.match(/<title>([^<]+)<\/title>/i)?.[1]?.replace(/ \| Loom$/i, "").trim();
-  return url ? { url, title: t || null } : null;
+  return url
+    ? { url, kind: url.includes(".m3u8") ? ("hls" as const) : ("mp4" as const), title: t || null }
+    : null;
 }
 
 /**
