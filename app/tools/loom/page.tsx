@@ -36,6 +36,7 @@ type JobKind = "mp4" | "md";
 interface Job {
   id: number;
   url: string;
+  videoId: string;
   kind: JobKind;
   status: "queued" | "running" | "done" | "error";
   steps: Step[];
@@ -113,6 +114,7 @@ export default function LoomDownloaderPage() {
     const jobs: Job[] = validUrls.map((url) => ({
       id: nextId.current++,
       url,
+      videoId: url.match(/[0-9a-f]{32}/i)?.[0]?.toLowerCase() ?? url,
       kind,
       status: "queued",
       steps: [],
@@ -221,6 +223,18 @@ export default function LoomDownloaderPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [queue]);
 
+  // Duplicates: same video queued for the same job type more than once.
+  const dupKeys = new Map<string, number>();
+  for (const j of queue) {
+    const k = `${j.videoId}:${j.kind}`;
+    dupKeys.set(k, (dupKeys.get(k) ?? 0) + 1);
+  }
+  const isDup = (j: Job) => (dupKeys.get(`${j.videoId}:${j.kind}`) ?? 0) > 1;
+  const dupCount = queue.filter(isDup).length;
+
+  const removeJob = (id: number) =>
+    setQueue((q) => q.filter((j) => j.id !== id || j.status === "running"));
+
   const running = queue.filter((j) => j.status === "running").length;
   const queued = queue.filter((j) => j.status === "queued").length;
   const doneCount = queue.filter((j) => j.status === "done").length;
@@ -289,6 +303,9 @@ export default function LoomDownloaderPage() {
               {queued > 0 && `${queued} queued · `}
               {doneCount > 0 && `${doneCount} done`}
               {errCount > 0 && ` · ${errCount} failed`}
+              {dupCount > 0 && (
+                <span className="text-amber-400"> · {dupCount} duplicate{dupCount > 1 ? "s" : ""}</span>
+              )}
             </p>
             <ul className="space-y-2">
               {queue.map((j) => {
@@ -297,7 +314,10 @@ export default function LoomDownloaderPage() {
                 return (
                   <li
                     key={j.id}
-                    className="rounded-lg border border-[#2a2e39] bg-[#0b0e11] p-3"
+                    className={cn(
+                      "rounded-lg border bg-[#0b0e11] p-3",
+                      isDup(j) ? "border-amber-600/50" : "border-[#2a2e39]",
+                    )}
                   >
                     <div className="flex items-start gap-2.5">
                       <span className="mt-0.5 shrink-0">
@@ -321,6 +341,12 @@ export default function LoomDownloaderPage() {
                             <span className="text-red-400"> · {j.error}</span>
                           )}
                         </p>
+                        {isDup(j) && (
+                          <p className="mt-0.5 text-[10px] font-medium text-amber-400">
+                            Duplicate — this video is already queued for{" "}
+                            {j.kind === "mp4" ? "download" : "transcription"}
+                          </p>
+                        )}
                       </div>
                       {j.steps.length > 0 && (
                         <button
@@ -340,6 +366,15 @@ export default function LoomDownloaderPage() {
                           className="shrink-0 text-[10px] text-[#2962ff] hover:underline"
                         >
                           {preview === j.id ? "Hide" : "Preview"}
+                        </button>
+                      )}
+                      {j.status !== "running" && (
+                        <button
+                          onClick={() => removeJob(j.id)}
+                          className="shrink-0 text-[10px] text-neutral-500 hover:text-red-400"
+                          aria-label="Remove from queue"
+                        >
+                          Remove
                         </button>
                       )}
                     </div>
