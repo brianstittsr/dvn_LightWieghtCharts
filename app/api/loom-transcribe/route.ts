@@ -7,6 +7,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { extractLoomVideoId, loomVideoTitle, resolveLoomVideo } from "@/lib/loom";
 import { hlsAudioToMp3 } from "@/lib/loom-hls";
+import { createProgressStream, NDJSON_HEADERS, sendFile } from "@/lib/progress-stream";
 
 const execFileAsync = promisify(execFile);
 
@@ -28,6 +29,7 @@ export const maxDuration = 300;
 const querySchema = z.object({
   url: z.string().url().max(2000),
   raw: z.coerce.boolean().optional(),
+  progress: z.coerce.boolean().optional(),
 });
 
 const WHISPER_LIMIT = 25 * 1024 * 1024; // 25 MB
@@ -177,11 +179,17 @@ async function mediaDurationSec(file: string): Promise<number> {
  * when the file exceeds the 25 MB cap. Segment timestamps are offset back
  * to absolute positions so the merged transcript reads continuously.
  */
-async function whisperChunked(mp3Path: string, dir: string, id: string): Promise<TranscriptResult> {
+async function whisperChunked(
+  mp3Path: string,
+  dir: string,
+  id: string,
+  onStep?: (msg: string) => void,
+): Promise<TranscriptResult> {
   const mp3Size = (await stat(mp3Path)).size;
   if (mp3Size === 0) throw new Error("Audio extraction produced an empty file — video may have no audio track");
 
   if (mp3Size <= WHISPER_LIMIT) {
+    onStep?.(`Sending ${(mp3Size / 1024 / 1024).toFixed(1)} MB audio to Whisper…`);
     const r = await whisperOnce(await readFile(mp3Path), `loom-${id}.mp3`, "audio/mpeg");
     return { text: r.text ?? "", segments: r.segments, engine: "whisper" };
   }
@@ -213,6 +221,7 @@ async function whisperChunked(mp3Path: string, dir: string, id: string): Promise
     }
     if (size === 0) continue;
 
+    onStep?.(`Transcribing chunk ${i + 1}/${chunks} (${fmtTimestamp(start)}–${fmtTimestamp(start + len)})…`);
     const r = await whisperOnce(await readFile(chunkPath), `loom-${id}-part${i + 1}.mp3`, "audio/mpeg");
     if (r.text) texts.push(r.text.trim());
     for (const s of r.segments ?? []) {
@@ -228,7 +237,12 @@ async function whisperChunked(mp3Path: string, dir: string, id: string): Promise
  * Whisper's 25 MB cap, split it into ~20-minute chunks, transcribe each with
  * offset timestamps, and stitch the results into a single transcript.
  */
-async function transcribeWhisper(videoUrl: string, id: string): Promise<TranscriptResult> {
+async function transcribeWhisper(
+  videoUrl: string,
+  id: string,
+  onStep?: (msg: string) => void,
+): Promise<TranscriptResult> {
+  onStep?.("Downloading video from Loom CDN…");
   const videoRes = await fetch(videoUrl, {
     headers: { "User-Agent": "Mozilla/5.0" },
   });
@@ -244,11 +258,12 @@ async function transcribeWhisper(videoUrl: string, id: string): Promise<Transcri
 
     // Extract mono 16 kHz mp3 — speech needs nothing more; ~0.12 MB/min.
     // A 25 MB video typically yields 2–4 MB of audio, avoiding any chunking.
+    onStep?.("Extracting audio track (16 kHz mono mp3)…");
     await ffmpeg([
       "-y", "-i", mp4Path, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", mp3Path,
     ]);
 
-    return await whisperChunked(mp3Path, dir, id);
+    return await whisperChunked(mp3Path, dir, id, onStep);
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
@@ -258,10 +273,14 @@ async function transcribeWhisper(videoUrl: string, id: string): Promise<Transcri
  * HLS variant: pull just the audio stream's playlist (signature-propagated)
  * and encode straight to mp3 — the video track never gets downloaded.
  */
-async function transcribeWhisperHls(masterUrl: string, id: string): Promise<TranscriptResult> {
-  const { dir, file } = await hlsAudioToMp3(masterUrl);
+async function transcribeWhisperHls(
+  masterUrl: string,
+  id: string,
+  onStep?: (msg: string) => void,
+): Promise<TranscriptResult> {
+  const { dir, file } = await hlsAudioToMp3(masterUrl, onStep);
   try {
-    return await whisperChunked(file, dir, `${id}-hls`);
+    return await whisperChunked(file, dir, `${id}-hls`, onStep);
   } finally {
     await rm(dir, { recursive: true, force: true }).catch(() => {});
   }
@@ -273,6 +292,7 @@ export async function GET(req: NextRequest) {
   const parsed = querySchema.safeParse({
     url: req.nextUrl.searchParams.get("url"),
     raw: req.nextUrl.searchParams.get("raw") ?? undefined,
+    progress: req.nextUrl.searchParams.get("progress") ?? undefined,
   });
   if (!parsed.success) {
     return NextResponse.json(
@@ -298,6 +318,61 @@ export async function GET(req: NextRequest) {
     );
   }
 
+  // ── Progress mode: NDJSON event stream ──────────────────────────────────
+  if (parsed.data.progress) {
+    const p = createProgressStream();
+    (async () => {
+      try {
+        p.step("resolve", "Resolving Loom video");
+        const video = await resolveLoomVideo(id);
+        if (!video) {
+          p.fail(
+            "resolve",
+            "Could not resolve a downloadable MP4 — the video may be private, password-protected, or deleted.",
+          );
+          return;
+        }
+        p.done("resolve", video.kind === "hls" ? "HLS stream" : "Direct MP4");
+
+        p.step("transcribe", useDeepgram ? "Transcribing via Deepgram" : "Transcribing via Whisper");
+        const onStep = (msg: string) => p.step("transcribe", msg);
+        let result: TranscriptResult;
+        try {
+          result = useDeepgram
+            ? await transcribeDeepgram(video.url)
+            : video.kind === "hls"
+              ? await transcribeWhisperHls(video.url, id, onStep)
+              : await transcribeWhisper(video.url, id, onStep);
+        } catch (first) {
+          if (useDeepgram && useWhisper) {
+            p.step("transcribe", "Deepgram failed — falling back to Whisper");
+            result = video.kind === "hls"
+              ? await transcribeWhisperHls(video.url, id, onStep)
+              : await transcribeWhisper(video.url, id, onStep);
+          } else {
+            throw first;
+          }
+        }
+        p.done("transcribe", `${result.engine} · ${result.segments?.length ?? 0} segments`);
+
+        p.step("markdown", "Building markdown");
+        const title = video.title ?? (await loomVideoTitle(id).catch(() => null));
+        const markdown = toMarkdown(title, parsed.data.url, id, result);
+        const filename = `${(title ?? `loom-${id}`).replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "-").slice(0, 80) || `loom-${id}`}.md`;
+        p.done("markdown", filename);
+
+        sendFile(p.send, Buffer.from(markdown, "utf8"), filename, "text/markdown");
+        p.send({ type: "done" });
+      } catch (e) {
+        p.fail("transcribe", e instanceof Error ? e.message : "Transcription failed");
+      } finally {
+        p.close();
+      }
+    })();
+    return new NextResponse(p.stream, { headers: NDJSON_HEADERS });
+  }
+
+  // ── Plain mode ──────────────────────────────────────────────────────────
   const video = await resolveLoomVideo(id);
   if (!video) {
     return NextResponse.json(

@@ -101,9 +101,11 @@ const WHITELIST = ["-protocol_whitelist", "file,https,tls,tcp,crypto"];
  */
 export async function downloadHlsToMp4(
   masterUrl: string,
+  onStep?: (msg: string) => void,
 ): Promise<{ dir: string; file: string }> {
   const dir = await mkdtemp(join(tmpdir(), "loom-hls-"));
   try {
+    onStep?.("Fetching master playlist…");
     const masterText = await (await fetch(masterUrl, {
       headers: { "User-Agent": "Mozilla/5.0" },
     }).then((r) => {
@@ -115,17 +117,25 @@ export async function downloadHlsToMp4(
     if (!bestVideoUri) throw new Error("No video stream found in HLS playlist");
 
     // Rewrite sub-playlists with signed segment URLs.
+    onStep?.("Fetching video segments playlist…");
     const vidText = await fetchRewrittenPlaylist(resolveUri(bestVideoUri, masterUrl));
     const vidPath = join(dir, "video.m3u8");
     await writeFile(vidPath, vidText);
+    const vidSegs = vidText.split("\n").filter((l) => l.trim() && !l.startsWith("#")).length;
 
     let audPath: string | null = null;
+    let audSegs = 0;
     if (audioUri) {
+      onStep?.("Fetching audio segments playlist…");
       const audText = await fetchRewrittenPlaylist(resolveUri(audioUri, masterUrl));
       audPath = join(dir, "audio.m3u8");
       await writeFile(audPath, audText);
+      audSegs = audText.split("\n").filter((l) => l.trim() && !l.startsWith("#")).length;
     }
 
+    onStep?.(
+      `Downloading & remuxing ${vidSegs + audSegs} segments to mp4…`,
+    );
     const out = join(dir, "video.mp4");
     const args = [...WHITELIST, "-y", "-i", vidPath];
     if (audPath) args.push("-i", audPath);
@@ -145,9 +155,11 @@ export async function downloadHlsToMp4(
  */
 export async function hlsAudioToMp3(
   masterUrl: string,
+  onStep?: (msg: string) => void,
 ): Promise<{ dir: string; file: string }> {
   const dir = await mkdtemp(join(tmpdir(), "loom-hls-"));
   try {
+    onStep?.("Fetching master playlist…");
     const masterText = await (await fetch(masterUrl, {
       headers: { "User-Agent": "Mozilla/5.0" },
     }).then((r) => {
@@ -159,10 +171,13 @@ export async function hlsAudioToMp3(
     const pick = audioUri ?? bestVideoUri;
     if (!pick) throw new Error("No audio or video stream found in HLS playlist");
 
+    onStep?.("Fetching audio segments playlist…");
     const plText = await fetchRewrittenPlaylist(resolveUri(pick, masterUrl));
     const plPath = join(dir, "audio.m3u8");
     await writeFile(plPath, plText);
+    const segs = plText.split("\n").filter((l) => l.trim() && !l.startsWith("#")).length;
 
+    onStep?.(`Downloading ${segs} audio segments → mp3…`);
     const out = join(dir, "audio.mp3");
     await runFfmpeg([
       ...WHITELIST, "-y", "-i", plPath, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", out,

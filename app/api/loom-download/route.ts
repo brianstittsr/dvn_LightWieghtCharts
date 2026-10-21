@@ -3,24 +3,29 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { extractLoomVideoId, resolveLoomVideo } from "@/lib/loom";
 import { downloadHlsToMp4 } from "@/lib/loom-hls";
+import { createProgressStream, NDJSON_HEADERS, sendFile } from "@/lib/progress-stream";
 
 /**
  * Loom video downloader.
  *
  * GET /api/loom-download?url=<loom share url>&raw=1
- *   → { data: { url, id } }           — resolve only, return the mp4 URL
+ *   → { data: { url, id, kind } }    — resolve only
  * GET /api/loom-download?url=<loom share url>
  *   → streams the mp4 with Content-Disposition: attachment
+ * GET /api/loom-download?url=<loom share url>&progress=1
+ *   → NDJSON progress events, then the file as base64 chunks
  */
 const querySchema = z.object({
   url: z.string().url().max(2000),
   raw: z.coerce.boolean().optional(),
+  progress: z.coerce.boolean().optional(),
 });
 
 export async function GET(req: NextRequest) {
   const parsed = querySchema.safeParse({
     url: req.nextUrl.searchParams.get("url"),
     raw: req.nextUrl.searchParams.get("raw") ?? undefined,
+    progress: req.nextUrl.searchParams.get("progress") ?? undefined,
   });
   if (!parsed.success) {
     return NextResponse.json(
@@ -37,8 +42,61 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const video = await resolveLoomVideo(id);
+  // ── Progress mode: NDJSON event stream ──────────────────────────────────
+  if (parsed.data.progress) {
+    const p = createProgressStream();
+    (async () => {
+      try {
+        p.step("resolve", "Resolving Loom video");
+        const video = await resolveLoomVideo(id);
+        if (!video) {
+          p.fail(
+            "resolve",
+            "Could not resolve a downloadable MP4 — the video may be private, password-protected, or deleted.",
+          );
+          return;
+        }
+        p.done("resolve", video.kind === "hls" ? "HLS stream" : "Direct MP4");
 
+        let buf: Buffer;
+        if (video.kind === "hls") {
+          const { dir, file } = await downloadHlsToMp4(video.url, (msg) =>
+            p.step("download", "Downloading HLS stream", msg),
+          );
+          try {
+            p.done("download");
+            p.step("read", "Reading remuxed mp4");
+            buf = await readFile(file);
+          } finally {
+            await rm(dir, { recursive: true, force: true }).catch(() => {});
+          }
+        } else {
+          p.step("download", "Downloading MP4 from Loom CDN");
+          const upstream = await fetch(video.url, {
+            headers: { "User-Agent": "Mozilla/5.0" },
+          });
+          if (!upstream.ok) {
+            p.fail("download", `Loom CDN returned ${upstream.status}`);
+            return;
+          }
+          buf = Buffer.from(await upstream.arrayBuffer());
+        }
+        p.done("download", `${(buf.byteLength / 1024 / 1024).toFixed(1)} MB`);
+        p.done("read");
+
+        sendFile(p.send, buf, `loom-${id}.mp4`, "video/mp4");
+        p.send({ type: "done" });
+      } catch (e) {
+        p.fail("download", e instanceof Error ? e.message : "Download failed");
+      } finally {
+        p.close();
+      }
+    })();
+    return new NextResponse(p.stream, { headers: NDJSON_HEADERS });
+  }
+
+  // ── Plain mode ──────────────────────────────────────────────────────────
+  const video = await resolveLoomVideo(id);
   if (!video) {
     return NextResponse.json(
       {
@@ -53,7 +111,6 @@ export async function GET(req: NextRequest) {
     return NextResponse.json({ data: { id, url: video.url, title: video.title, kind: video.kind } });
   }
 
-  // HLS-only video — download + remux to mp4 via ffmpeg, then stream.
   if (video.kind === "hls") {
     try {
       const { dir, file } = await downloadHlsToMp4(video.url);
