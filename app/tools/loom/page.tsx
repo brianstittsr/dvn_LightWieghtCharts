@@ -11,15 +11,48 @@ const btn =
 export default function LoomDownloaderPage() {
   const [url, setUrl] = useState("");
   const [busy, setBusy] = useState(false);
+  const [transcribing, setTranscribing] = useState(false);
   const [err, setErr] = useState("");
   const [resolvedUrl, setResolvedUrl] = useState("");
+  const [markdown, setMarkdown] = useState("");
 
   const valid = /loom\.com\/(share|embed|v)\/[0-9a-f]{32}/i.test(url);
+
+  const transcribe = async () => {
+    setTranscribing(true);
+    setErr("");
+    setMarkdown("");
+    try {
+      const res = await fetch(
+        `/api/loom-transcribe?raw=1&url=${encodeURIComponent(url)}`,
+      );
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        setErr(d.error ?? "Transcription failed");
+        return;
+      }
+      setMarkdown(d.data.markdown);
+      // Download the markdown file.
+      const blob = new Blob([d.data.markdown], { type: "text/markdown" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = `${(d.data.title ?? `loom-${d.data.id}`).replace(/[^\w\- ]+/g, "").trim().replace(/\s+/g, "-")}.md`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(a.href);
+    } catch {
+      setErr("Transcription failed");
+    } finally {
+      setTranscribing(false);
+    }
+  };
 
   const download = async () => {
     setBusy(true);
     setErr("");
     setResolvedUrl("");
+    setMarkdown("");
     try {
       // Resolve first so we can surface a friendly error before streaming.
       const res = await fetch(
@@ -67,10 +100,18 @@ export default function LoomDownloaderPage() {
           <div className="flex items-center gap-2">
             <button
               onClick={download}
-              disabled={busy || !valid}
+              disabled={busy || transcribing || !valid}
               className={cn(btn, "bg-[#2962ff] hover:bg-[#1e53e5]")}
             >
               {busy ? "Resolving…" : "Download MP4"}
+            </button>
+            <button
+              onClick={transcribe}
+              disabled={busy || transcribing || !valid}
+              className={cn(btn, "bg-[#7a4bc4] hover:bg-[#8b5cd6]")}
+              title="Download the video, transcribe with Whisper, save as markdown"
+            >
+              {transcribing ? "Transcribing…" : "Transcribe → .md"}
             </button>
             {resolvedUrl && (
               <a
@@ -90,10 +131,17 @@ export default function LoomDownloaderPage() {
             </p>
           )}
           {err && <p className="text-xs text-red-400">{err}</p>}
+
+          {markdown && (
+            <pre className="max-h-64 overflow-y-auto whitespace-pre-wrap rounded border border-[#2a2e39] bg-[#0b0e11] p-3 text-[11px] text-neutral-300">
+              {markdown}
+            </pre>
+          )}
         </div>
 
         <p className="mt-4 border-t border-[#2a2e39] pt-3 text-[10px] text-neutral-600">
-          Downloading works only for videos shared publicly on Loom. Respect the
+          Downloading works only for videos shared publicly on Loom. Transcription
+          uses OpenAI Whisper (requires OPENAI_API_KEY, 25 MB limit). Respect the
           video owner&apos;s rights.
         </p>
       </div>
