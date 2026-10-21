@@ -141,8 +141,8 @@ export default function LoomDownloaderPage() {
 
         <p className="mt-4 border-t border-[#2a2e39] pt-3 text-[10px] text-neutral-600">
           Downloading works only for videos shared publicly on Loom. Transcription
-          uses OpenAI Whisper (requires OPENAI_API_KEY, 25 MB limit). Respect the
-          video owner&apos;s rights.
+          uses Deepgram (no size limit, DEEPGRAM_API_KEY) or OpenAI Whisper
+          (≤25 MB, OPENAI_API_KEY). Respect the video owner&apos;s rights.
         </p>
       </div>
     </div>
