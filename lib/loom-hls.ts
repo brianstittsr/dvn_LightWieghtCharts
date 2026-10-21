@@ -142,8 +142,11 @@ export async function downloadHlsToMp4(
       `Downloading & remuxing ${vidSegs + audSegs} segments to mp4…`,
     );
     const out = join(dir, "video.mp4");
+    // -protocol_whitelist is per-input — repeat before EVERY -i or the
+    // second playlist's https segments get blocked by the default
+    // file,crypto whitelist.
     const args = [...WHITELIST, "-y", "-i", vidPath];
-    if (audPath) args.push("-i", audPath);
+    if (audPath) args.push(...WHITELIST, "-i", audPath);
     args.push("-c", "copy", "-bsf:a", "aac_adtstoasc", out);
     await runFfmpeg(args);
 
