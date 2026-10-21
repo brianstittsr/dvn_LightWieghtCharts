@@ -1,12 +1,15 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
 const sel =
   "w-full rounded border border-[#2a2e39] bg-[#0b0e11] px-3 py-2 text-sm text-gray-200 outline-none focus:border-[#2962ff]";
 const btn =
   "rounded px-4 py-2 text-sm font-semibold text-white disabled:opacity-40";
+
+const CONCURRENCY = 3;
+const URL_RE = /loom\.com\/(share|embed|v)\/[0-9a-f]{32}/i;
 
 interface Step {
   id: string;
@@ -28,6 +31,19 @@ interface ProgressEvent {
   error?: string;
 }
 
+type JobKind = "mp4" | "md";
+
+interface Job {
+  id: number;
+  url: string;
+  kind: JobKind;
+  status: "queued" | "running" | "done" | "error";
+  steps: Step[];
+  error?: string;
+  filename?: string;
+  markdown?: string;
+}
+
 function b64ToBytes(b64: string): Uint8Array {
   const bin = atob(b64);
   const bytes = new Uint8Array(bin.length);
@@ -35,47 +51,82 @@ function b64ToBytes(b64: string): Uint8Array {
   return bytes;
 }
 
+function statusIcon(status: Job["status"] | Step["status"]) {
+  if (status === "running")
+    return (
+      <span className="block h-4 w-4 animate-spin rounded-full border-2 border-[#2962ff] border-t-transparent" />
+    );
+  if (status === "done")
+    return (
+      <span className="flex h-4 w-4 items-center justify-center rounded-full bg-emerald-600 text-[10px] font-bold text-white">
+        ✓
+      </span>
+    );
+  if (status === "error")
+    return (
+      <span className="flex h-4 w-4 items-center justify-center rounded-full bg-red-600 text-[10px] font-bold text-white">
+        ✕
+      </span>
+    );
+  return (
+    <span className="flex h-4 w-4 items-center justify-center rounded-full border border-neutral-600 text-[9px] text-neutral-500">
+      …
+    </span>
+  );
+}
+
 export default function LoomDownloaderPage() {
-  const [url, setUrl] = useState("");
-  const [modalOpen, setModalOpen] = useState(false);
-  const [modalTitle, setModalTitle] = useState("");
-  const [steps, setSteps] = useState<Step[]>([]);
-  const [err, setErr] = useState("");
-  const [resolvedUrl, setResolvedUrl] = useState("");
-  const [markdown, setMarkdown] = useState("");
-  const [finished, setFinished] = useState(false);
+  const [input, setInput] = useState("");
+  const [queue, setQueue] = useState<Job[]>([]);
+  const [expanded, setExpanded] = useState<number | null>(null);
+  const [preview, setPreview] = useState<number | null>(null);
+  const nextId = useRef(1);
 
-  const valid = /loom\.com\/(share|embed|v)\/[0-9a-f]{32}/i.test(url);
+  const urls = input
+    .split(/\s+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const validUrls = urls.filter((u) => URL_RE.test(u));
 
-  /** Consume an NDJSON progress stream; update steps; collect file chunks. */
-  const runWithProgress = async (
-    endpoint: string,
-    title: string,
-    onMarkdown?: (md: string) => void,
-  ) => {
-    setErr("");
-    setMarkdown("");
-    setResolvedUrl("");
-    setModalTitle(title);
-    setSteps([]);
-    setFinished(false);
-    setModalOpen(true);
+  const patchJob = (id: number, patch: Partial<Job>) =>
+    setQueue((q) => q.map((j) => (j.id === id ? { ...j, ...patch } : j)));
 
-    const pushStep = (e: ProgressEvent) => {
-      setSteps((prev) => {
-        const i = prev.findIndex((s) => s.id === e.step);
+  const pushStep = (id: number, e: ProgressEvent) =>
+    setQueue((q) =>
+      q.map((j) => {
+        if (j.id !== id) return j;
+        const i = j.steps.findIndex((s) => s.id === e.step);
         const next: Step = {
           id: e.step ?? "?",
-          label: e.label ?? (i >= 0 ? prev[i].label : "?"),
+          label: e.label ?? (i >= 0 ? j.steps[i].label : "?"),
           detail: e.detail,
           status: e.status ?? "running",
         };
-        if (i < 0) return [...prev, next];
-        const copy = [...prev];
-        copy[i] = { ...copy[i], ...next };
-        return copy;
-      });
-    };
+        if (i < 0) return { ...j, steps: [...j.steps, next] };
+        const steps = [...j.steps];
+        steps[i] = { ...steps[i], ...next };
+        return { ...j, steps };
+      }),
+    );
+
+  const enqueue = (kind: JobKind) => {
+    const jobs: Job[] = validUrls.map((url) => ({
+      id: nextId.current++,
+      url,
+      kind,
+      status: "queued",
+      steps: [],
+    }));
+    setQueue((q) => [...q, ...jobs]);
+  };
+
+  /** Run one job: consume its NDJSON stream, save the file, update state. */
+  const runJob = async (job: Job) => {
+    patchJob(job.id, { status: "running" });
+    const endpoint =
+      job.kind === "mp4"
+        ? `/api/loom-download?progress=1&url=${encodeURIComponent(job.url)}`
+        : `/api/loom-transcribe?progress=1&url=${encodeURIComponent(job.url)}`;
 
     try {
       const res = await fetch(endpoint);
@@ -86,7 +137,7 @@ export default function LoomDownloaderPage() {
       const reader = res.body!.getReader();
       const decoder = new TextDecoder();
       let buf = "";
-      let filename = "";
+      let filename = "download";
       let mime = "application/octet-stream";
       const chunks: Uint8Array[] = [];
 
@@ -99,10 +150,11 @@ export default function LoomDownloaderPage() {
         for (const line of lines) {
           if (!line.trim()) continue;
           const e = JSON.parse(line) as ProgressEvent;
-          if (e.type === "step") pushStep(e);
+          if (e.type === "step") pushStep(job.id, e);
           else if (e.type === "file") {
-            filename = e.filename ?? "download";
+            filename = e.filename ?? filename;
             mime = e.mime ?? mime;
+            patchJob(job.id, { filename });
           } else if (e.type === "chunk" && e.data) {
             chunks.push(b64ToBytes(e.data));
           } else if (e.type === "error") {
@@ -111,7 +163,6 @@ export default function LoomDownloaderPage() {
         }
       }
 
-      // Assemble + save.
       const total = chunks.reduce((n, c) => n + c.byteLength, 0);
       const out = new Uint8Array(total);
       let off = 0;
@@ -129,174 +180,223 @@ export default function LoomDownloaderPage() {
       a.remove();
       URL.revokeObjectURL(objUrl);
 
-      if (mime === "text/markdown") {
-        const text = new TextDecoder().decode(out);
-        setMarkdown(text);
-        onMarkdown?.(text);
-      }
-      setFinished(true);
+      patchJob(job.id, {
+        status: "done",
+        markdown:
+          mime === "text/markdown" ? new TextDecoder().decode(out) : undefined,
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Failed";
-      setErr(msg);
-      setSteps((prev) =>
-        prev.length
-          ? prev.map((s, i) =>
-              i === prev.length - 1 && s.status === "running"
-                ? { ...s, status: "error" }
-                : s,
-            )
-          : [{ id: "error", label: msg, status: "error" }],
+      setQueue((q) =>
+        q.map((j) =>
+          j.id === job.id
+            ? {
+                ...j,
+                status: "error",
+                error: msg,
+                steps: j.steps.length
+                  ? j.steps.map((s, i) =>
+                      i === j.steps.length - 1 && s.status === "running"
+                        ? { ...s, status: "error" }
+                        : s,
+                    )
+                  : [{ id: "error", label: msg, status: "error" }],
+              }
+            : j,
+        ),
       );
     }
   };
 
-  const download = () =>
-    runWithProgress(
-      `/api/loom-download?progress=1&url=${encodeURIComponent(url)}`,
-      "Downloading video",
-    );
+  // Scheduler: keep up to CONCURRENCY jobs running.
+  const inFlight = useRef(new Set<number>());
+  useEffect(() => {
+    for (const job of queue) {
+      if (inFlight.current.size >= CONCURRENCY) break;
+      if (job.status === "queued" && !inFlight.current.has(job.id)) {
+        inFlight.current.add(job.id);
+        void runJob(job).finally(() => inFlight.current.delete(job.id));
+      }
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [queue]);
 
-  const transcribe = () =>
-    runWithProgress(
-      `/api/loom-transcribe?progress=1&url=${encodeURIComponent(url)}`,
-      "Transcribing video",
-    );
-
-  const busy = modalOpen && !finished && !err;
+  const running = queue.filter((j) => j.status === "running").length;
+  const queued = queue.filter((j) => j.status === "queued").length;
+  const doneCount = queue.filter((j) => j.status === "done").length;
+  const errCount = queue.filter((j) => j.status === "error").length;
 
   return (
     <div className="flex min-h-screen items-start justify-center bg-[#0b0e13] px-4 pt-16 text-neutral-200">
-      <div className="w-full max-w-lg rounded-xl border border-[#2a2e39] bg-[#131722] p-6 shadow-2xl">
+      <div className="w-full max-w-2xl rounded-xl border border-[#2a2e39] bg-[#131722] p-6 shadow-2xl">
         <h1 className="text-lg font-bold text-white">Loom Video Downloader</h1>
         <p className="mt-1 text-xs text-neutral-500">
-          Paste a public Loom share link to download the MP4 or a timestamped
-          markdown transcript. Private or password-protected videos can&apos;t be
-          fetched — Loom requires login for those.
+          Paste public Loom share links — one per line — then queue MP4
+          downloads or timestamped markdown transcripts. Up to {CONCURRENCY}{" "}
+          jobs run at once; the rest wait in line. Private or
+          password-protected videos can&apos;t be fetched.
         </p>
 
         <div className="mt-4 space-y-3">
-          <input
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            placeholder="https://www.loom.com/share/1a2b3c…"
-            className={sel}
-            aria-label="Loom share URL"
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            placeholder={"https://www.loom.com/share/1a2b3c…\nhttps://www.loom.com/share/4d5e6f…"}
+            className={cn(sel, "h-20 resize-y font-mono text-xs")}
+            aria-label="Loom share URLs, one per line"
           />
 
           <div className="flex items-center gap-2">
             <button
-              onClick={download}
-              disabled={busy || !valid}
+              onClick={() => enqueue("mp4")}
+              disabled={!validUrls.length}
               className={cn(btn, "bg-[#2962ff] hover:bg-[#1e53e5]")}
             >
-              Download MP4
+              Queue MP4{validUrls.length > 1 ? `s (${validUrls.length})` : ""}
             </button>
             <button
-              onClick={transcribe}
-              disabled={busy || !valid}
+              onClick={() => enqueue("md")}
+              disabled={!validUrls.length}
               className={cn(btn, "bg-[#7a4bc4] hover:bg-[#8b5cd6]")}
             >
-              Transcribe → .md
+              Queue transcript
+              {validUrls.length > 1 ? `s (${validUrls.length})` : ""}
             </button>
-            {resolvedUrl && (
-              <a
-                href={resolvedUrl}
-                target="_blank"
-                rel="noreferrer"
-                className="text-xs text-[#2962ff] hover:underline"
+            {queue.length > 0 && (
+              <button
+                onClick={() => setQueue((q) => q.filter((j) => j.status === "queued" || j.status === "running"))}
+                className="ml-auto rounded px-3 py-2 text-xs text-neutral-500 hover:text-white"
               >
-                Open direct CDN link
-              </a>
+                Clear finished
+              </button>
             )}
           </div>
 
-          {url && !valid && (
+          {urls.length > 0 && validUrls.length < urls.length && (
             <p className="text-xs text-amber-400">
-              That doesn&apos;t look like a Loom share URL.
+              {urls.length - validUrls.length} of {urls.length} link
+              {urls.length > 1 ? "s" : ""} don&apos;t look like Loom share URLs
+              and will be skipped.
             </p>
           )}
-
-          {markdown && (
-            <pre className="max-h-64 overflow-y-auto whitespace-pre-wrap rounded border border-[#2a2e39] bg-[#0b0e11] p-3 text-[11px] text-neutral-300">
-              {markdown}
-            </pre>
-          )}
         </div>
+
+        {/* Queue */}
+        {queue.length > 0 && (
+          <div className="mt-5 border-t border-[#2a2e39] pt-4">
+            <p className="mb-3 text-xs text-neutral-500">
+              {running > 0 && `${running} running · `}
+              {queued > 0 && `${queued} queued · `}
+              {doneCount > 0 && `${doneCount} done`}
+              {errCount > 0 && ` · ${errCount} failed`}
+            </p>
+            <ul className="space-y-2">
+              {queue.map((j) => {
+                const last = j.steps[j.steps.length - 1];
+                const isExpanded = expanded === j.id;
+                return (
+                  <li
+                    key={j.id}
+                    className="rounded-lg border border-[#2a2e39] bg-[#0b0e11] p-3"
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <span className="mt-0.5 shrink-0">
+                        {statusIcon(j.status)}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-xs font-medium text-white">
+                          {j.filename ?? j.url}
+                        </p>
+                        <p className="text-[10px] text-neutral-500">
+                          {j.kind === "mp4" ? "MP4 download" : "Transcript"}
+                          {j.status === "queued" && " · waiting"}
+                          {j.status === "running" && last && (
+                            <>
+                              {" · "}
+                              {last.label}
+                              {last.detail ? ` — ${last.detail}` : ""}
+                            </>
+                          )}
+                          {j.status === "error" && (
+                            <span className="text-red-400"> · {j.error}</span>
+                          )}
+                        </p>
+                      </div>
+                      {j.steps.length > 0 && (
+                        <button
+                          onClick={() =>
+                            setExpanded(isExpanded ? null : j.id)
+                          }
+                          className="shrink-0 text-[10px] text-neutral-500 hover:text-white"
+                        >
+                          {isExpanded ? "Hide steps" : "Steps"}
+                        </button>
+                      )}
+                      {j.markdown && (
+                        <button
+                          onClick={() =>
+                            setPreview(preview === j.id ? null : j.id)
+                          }
+                          className="shrink-0 text-[10px] text-[#2962ff] hover:underline"
+                        >
+                          {preview === j.id ? "Hide" : "Preview"}
+                        </button>
+                      )}
+                    </div>
+
+                    {isExpanded && (
+                      <ul className="mt-2 space-y-1.5 border-t border-[#2a2e39] pt-2">
+                        {j.steps.map((s) => (
+                          <li
+                            key={s.id}
+                            className="flex items-start gap-2"
+                          >
+                            <span className="mt-0.5 shrink-0">
+                              {statusIcon(s.status)}
+                            </span>
+                            <div className="min-w-0">
+                              <p
+                                className={cn(
+                                  "text-[11px]",
+                                  s.status === "error"
+                                    ? "text-red-400"
+                                    : s.status === "done"
+                                      ? "text-neutral-400"
+                                      : "text-white",
+                                )}
+                              >
+                                {s.label}
+                              </p>
+                              {s.detail && (
+                                <p className="text-[10px] text-neutral-500">
+                                  {s.detail}
+                                </p>
+                              )}
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+
+                    {preview === j.id && j.markdown && (
+                      <pre className="mt-2 max-h-48 overflow-y-auto whitespace-pre-wrap rounded border border-[#2a2e39] bg-[#131722] p-2 text-[10px] text-neutral-300">
+                        {j.markdown}
+                      </pre>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        )}
 
         <p className="mt-4 border-t border-[#2a2e39] pt-3 text-[10px] text-neutral-600">
-          Downloading works only for videos shared publicly on Loom. Transcription
-          uses Deepgram (no size limit, DEEPGRAM_API_KEY) or OpenAI Whisper
-          (audio extracted + chunked locally, OPENAI_API_KEY). Respect the video
-          owner&apos;s rights.
+          Downloading works only for videos shared publicly on Loom.
+          Transcription uses Deepgram (no size limit, DEEPGRAM_API_KEY) or
+          OpenAI Whisper (audio extracted + chunked locally, OPENAI_API_KEY).
+          Respect the video owner&apos;s rights.
         </p>
       </div>
-
-      {/* Progress modal */}
-      {modalOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4">
-          <div
-            className="w-full max-w-md rounded-xl border border-[#2a2e39] bg-[#131722] p-5 shadow-2xl"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className="mb-3 flex items-center justify-between">
-              <h2 className="text-sm font-bold text-white">{modalTitle}</h2>
-              {(finished || err) && (
-                <button
-                  onClick={() => setModalOpen(false)}
-                  className="text-gray-500 hover:text-white"
-                  aria-label="Close"
-                >
-                  ✕
-                </button>
-              )}
-            </div>
-
-            <ul className="space-y-2">
-              {steps.map((s) => (
-                <li key={s.id} className="flex items-start gap-2.5">
-                  <span className="mt-0.5 inline-block h-4 w-4 shrink-0">
-                    {s.status === "running" ? (
-                      <span className="block h-4 w-4 animate-spin rounded-full border-2 border-[#2962ff] border-t-transparent" />
-                    ) : s.status === "done" ? (
-                      <span className="flex h-4 w-4 items-center justify-center rounded-full bg-emerald-600 text-[10px] font-bold text-white">
-                        ✓
-                      </span>
-                    ) : (
-                      <span className="flex h-4 w-4 items-center justify-center rounded-full bg-red-600 text-[10px] font-bold text-white">
-                        ✕
-                      </span>
-                    )}
-                  </span>
-                  <div className="min-w-0">
-                    <p
-                      className={cn(
-                        "text-xs font-medium",
-                        s.status === "done"
-                          ? "text-neutral-400"
-                          : s.status === "error"
-                            ? "text-red-400"
-                            : "text-white",
-                      )}
-                    >
-                      {s.label}
-                    </p>
-                    {s.detail && (
-                      <p className="text-[10px] text-neutral-500">{s.detail}</p>
-                    )}
-                  </div>
-                </li>
-              ))}
-            </ul>
-
-            {err && <p className="mt-3 text-xs text-red-400">{err}</p>}
-            {finished && (
-              <p className="mt-3 text-xs text-emerald-400">
-                Complete — your download should have started.
-              </p>
-            )}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
