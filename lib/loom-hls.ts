@@ -31,8 +31,12 @@ async function fetchRewrittenPlaylist(url: string): Promise<string> {
   const query = qi >= 0 ? url.slice(qi) : "";
   const base = url.slice(0, url.lastIndexOf("/") + 1);
 
-  const sign = (uri: string) =>
-    (uri.startsWith("http") ? uri : base + uri) + query;
+  const sign = (uri: string) => {
+    const abs = uri.startsWith("http") ? uri : base + uri;
+    if (!query || abs.includes("Policy=") || abs.includes("Signature=")) return abs;
+    // URIs can already carry their own query — join with &, not a second ?
+    return abs + (abs.includes("?") ? "&" + query.slice(1) : query);
+  };
 
   return text
     .split("\n")
@@ -79,7 +83,8 @@ export function parseMasterPlaylist(text: string): {
 function resolveUri(uri: string, playlistUrl: string): string {
   const base = playlistUrl.slice(0, playlistUrl.lastIndexOf("/") + 1);
   const query = playlistUrl.slice(playlistUrl.indexOf("?"));
-  return (uri.startsWith("http") ? uri : base + uri) + query;
+  const abs = uri.startsWith("http") ? uri : base + uri;
+  return abs.includes("?") ? abs + "&" + query.slice(1) : abs + query;
 }
 
 async function runFfmpeg(args: string[]): Promise<void> {
@@ -92,7 +97,7 @@ async function runFfmpeg(args: string[]): Promise<void> {
   }
 }
 
-const WHITELIST = ["-protocol_whitelist", "file,https,tls,tcp,crypto"];
+const WHITELIST = ["-protocol_whitelist", "file,https,tls,tcp,crypto,data"];
 
 /**
  * Download an HLS stream to a local MP4 (highest-bandwidth video + audio,
